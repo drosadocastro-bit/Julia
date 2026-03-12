@@ -9,10 +9,25 @@ import os
 from pathlib import Path
 
 # ── Environment Detection ──────────────────────────────────────────
-IS_KAGGLE = os.path.exists("/kaggle/input")
+COLAB_DATA_DIR = os.environ.get("BIRDCLEF_DATA_DIR")
+IS_KAGGLE = os.path.exists("/kaggle/input") and not bool(COLAB_DATA_DIR)
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 # ── Paths ──────────────────────────────────────────────────────────
-if IS_KAGGLE:
+if COLAB_DATA_DIR:
+    # Colab path override (set BIRDCLEF_DATA_DIR in notebook)
+    # Example: /content/cibuco-boriken/data/birdclef-2026
+    COMPETITION_DIR = Path(COLAB_DATA_DIR)
+    TRAIN_AUDIO_DIR = COMPETITION_DIR / "train_audio"
+    TRAIN_SOUNDSCAPES_DIR = COMPETITION_DIR / "train_soundscapes"
+    TRAIN_SOUNDSCAPES_LABELS_CSV = COMPETITION_DIR / "train_soundscapes_labels.csv"
+    TEST_AUDIO_DIR = COMPETITION_DIR / "test_soundscapes"
+    TRAIN_META_CSV = COMPETITION_DIR / "train_metadata.csv"
+    TAXONOMY_CSV = COMPETITION_DIR / "taxonomy.csv"
+    SAMPLE_SUBMISSION = COMPETITION_DIR / "sample_submission.csv"
+    MODEL_DIR = PROJECT_ROOT / "birdclef" / "models"
+    OUTPUT_DIR = PROJECT_ROOT / "birdclef" / "output"
+elif IS_KAGGLE:
     # Kaggle kernel paths (read-only input, writable working dir)
     COMPETITION_DIR = Path("/kaggle/input/birdclef-2026")
     TRAIN_AUDIO_DIR = COMPETITION_DIR / "train_audio"
@@ -26,8 +41,8 @@ if IS_KAGGLE:
     OUTPUT_DIR = Path("/kaggle/working")
 else:
     # Local development paths
-    PROJECT_ROOT = Path(__file__).resolve().parent.parent
-    COMPETITION_DIR = PROJECT_ROOT / "data" / "birdclef-2026" / "birdclef-2026"
+    # Expected: ./data/birdclef-2026
+    COMPETITION_DIR = PROJECT_ROOT / "data" / "birdclef-2026"
     TRAIN_AUDIO_DIR = COMPETITION_DIR / "train_audio"
     TRAIN_SOUNDSCAPES_DIR = COMPETITION_DIR / "train_soundscapes"
     TRAIN_SOUNDSCAPES_LABELS_CSV = COMPETITION_DIR / "train_soundscapes_labels.csv"
@@ -37,6 +52,21 @@ else:
     SAMPLE_SUBMISSION = COMPETITION_DIR / "sample_submission.csv"
     MODEL_DIR = PROJECT_ROOT / "birdclef" / "models"
     OUTPUT_DIR = PROJECT_ROOT / "birdclef" / "output"
+
+# Some downloads unzip into an extra nested folder:
+#   data/birdclef-2026/birdclef-2026/
+# Keep routing robust across both layouts.
+if not (COMPETITION_DIR / "train_audio").exists():
+    nested_dir = COMPETITION_DIR / "birdclef-2026"
+    if nested_dir.exists() and (nested_dir / "train_audio").exists():
+        COMPETITION_DIR = nested_dir
+        TRAIN_AUDIO_DIR = COMPETITION_DIR / "train_audio"
+        TRAIN_SOUNDSCAPES_DIR = COMPETITION_DIR / "train_soundscapes"
+        TRAIN_SOUNDSCAPES_LABELS_CSV = COMPETITION_DIR / "train_soundscapes_labels.csv"
+        TEST_AUDIO_DIR = COMPETITION_DIR / "test_soundscapes"
+        TRAIN_META_CSV = COMPETITION_DIR / "train_metadata.csv"
+        TAXONOMY_CSV = COMPETITION_DIR / "taxonomy.csv"
+        SAMPLE_SUBMISSION = COMPETITION_DIR / "sample_submission.csv"
 
 # ── Audio Constants ────────────────────────────────────────────────
 SAMPLE_RATE = 32000          # BirdCLEF standard SR
