@@ -1,0 +1,26 @@
+# BirdCLEF+ 2026 repo hygiene
+
+# Large competition data (never commit)
+data/
+
+# Training artifacts
+birdclef/models/
+birdclef/output/
+*.pt
+*.pth
+k_sweep_figure.png
+k_sweep_results.json
+
+# Python cache/build
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Environment/secrets
+.env
+.venv/
+
+# Archives/temp
+*.zip
+birdclef_sanity_*/
