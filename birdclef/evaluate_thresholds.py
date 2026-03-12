@@ -42,6 +42,8 @@ from birdclef.cfar_threshold import (
     cfar_adaptive_threshold_with_stats,
     fixed_threshold,
     apply_threshold,
+    estimate_clutter_profile,
+    suppress_clutter,
 )
 
 logger = logging.getLogger("birdclef.evaluate_thresholds")
@@ -246,14 +248,22 @@ def evaluate(
     preds_fixed = apply_threshold(val_probs, t_fixed)
     preds_cfar = apply_threshold(val_probs, t_cfar)
 
+    # ── Phase 2: MTI clutter suppression + CFAR ───────────────────
+    clutter_map = estimate_clutter_profile(val_probs, percentile=25.0)
+    clean_probs = suppress_clutter(val_probs, clutter_map)
+    t_mti_cfar = cfar_adaptive_threshold(clean_probs, k=k)
+    preds_mti_cfar = apply_threshold(clean_probs, t_mti_cfar)
+
     # ── Metrics ────────────────────────────────────────────────────
     auc_val = macro_roc_auc(val_targets, val_probs)
 
     f1_fixed_rare = species_f1(val_targets, preds_fixed, rare_indices)
     f1_cfar_rare = species_f1(val_targets, preds_cfar, rare_indices)
+    f1_mti_cfar_rare = species_f1(val_targets, preds_mti_cfar, rare_indices)
 
     fpr_fixed_val = false_positive_rate(val_targets, preds_fixed)
     fpr_cfar_val = false_positive_rate(val_targets, preds_cfar)
+    fpr_mti_cfar_val = false_positive_rate(val_targets, preds_mti_cfar)
 
     # ── Print report ───────────────────────────────────────────────
     if verbose:
@@ -261,36 +271,60 @@ def evaluate(
         print("  RESULTS")
         print("=" * 60)
 
-        print(f"\n{'Metric':<35} {f'Fixed (t={fixed_t})':<18} {f'CFAR (k={k})':<18}")
-        print("-" * 71)
-        print(f"{'Macro ROC-AUC (val)':<35} {auc_val:<18.4f} {auc_val:<18.4f}")
-        print(f"{'Rare-species F1 (val)':<35} {f1_fixed_rare:<18.4f} {f1_cfar_rare:<18.4f}")
-        print(f"{'FPR (val)':<35} {fpr_fixed_val:<18.4f} {fpr_cfar_val:<18.4f}")
+        hdr_fixed = f"Fixed (t={fixed_t})"
+        hdr_cfar = f"CFAR (k={k})"
+        hdr_mti = f"MTI-CFAR (k={k})"
+        print(f"\n{'Metric':<35} {hdr_fixed:<18} {hdr_cfar:<18} {hdr_mti:<18}")
+        print("-" * 89)
+        print(f"{'Macro ROC-AUC (val)':<35} {auc_val:<18.4f} {auc_val:<18.4f} {auc_val:<18.4f}")
+        print(f"{'Rare-species F1 (val)':<35} {f1_fixed_rare:<18.4f} {f1_cfar_rare:<18.4f} {f1_mti_cfar_rare:<18.4f}")
+        print(f"{'FPR (val)':<35} {fpr_fixed_val:<18.4f} {fpr_cfar_val:<18.4f} {fpr_mti_cfar_val:<18.4f}")
 
         # ── CFAR threshold distribution diagnostics ───────────────────
-        print(f"\nT_mean: {t_cfar.mean():.4f}")
-        print(f"T_std:  {t_cfar.std():.4f}")
-        print(f"T_min:  {t_cfar.min():.4f}")
-        print(f"T_max:  {t_cfar.max():.4f}")
-        print(f"sigma_noise mean: {sigma_noise.mean():.6f}")
+        print(f"\nCFAR Threshold Distribution:")
+        print(f"  T_mean: {t_cfar.mean():.4f}")
+        print(f"  T_std:  {t_cfar.std():.4f}")
+        print(f"  T_min:  {t_cfar.min():.4f}")
+        print(f"  T_max:  {t_cfar.max():.4f}")
+        print(f"  sigma_noise mean: {sigma_noise.mean():.6f}")
+
+        # ── Clutter profile diagnostics (Phase 2) ────────────────────
+        print(f"\nClutter Profile:")
+        print(f"  mean:  {clutter_map.mean():.4f}  (average ambient level)")
+        print(f"  max:   {clutter_map.max():.4f}  (most cluttered species)")
+        print(f"  min:   {clutter_map.min():.4f}  (cleanest species)")
+
+        clutter_sorted = np.argsort(clutter_map)
+        print(f"\n  Top 3 most cluttered species:")
+        for i in clutter_sorted[-3:][::-1]:
+            print(f"    {labels[i]:<25} clutter={clutter_map[i]:.4f}")
+        print(f"  Top 3 cleanest species:")
+        for i in clutter_sorted[:3]:
+            print(f"    {labels[i]:<25} clutter={clutter_map[i]:.4f}")
 
         # ── Fixed threshold direct comparison ─────────────────────────
-        print(f"\nFixed t=0.5:")
+        print(f"\nFixed t={fixed_t}:")
         print(f"  Rare-F1: {f1_fixed_rare:.4f}")
         print(f"  FPR: {fpr_fixed_val:.4f}")
 
     # ── Soundscape FPR (if available) ──────────────────────────────
     sc_fpr_fixed = None
     sc_fpr_cfar = None
+    sc_fpr_mti_cfar = None
     if sc_probs is not None and sc_targets is not None:
         sc_preds_fixed = apply_threshold(sc_probs, t_fixed)
         sc_preds_cfar = apply_threshold(sc_probs, t_cfar)
 
+        # Phase 2: suppress soundscape probs with the same clutter map
+        sc_clean = suppress_clutter(sc_probs, clutter_map)
+        sc_preds_mti_cfar = apply_threshold(sc_clean, t_mti_cfar)
+
         sc_fpr_fixed = false_positive_rate(sc_targets, sc_preds_fixed)
         sc_fpr_cfar = false_positive_rate(sc_targets, sc_preds_cfar)
+        sc_fpr_mti_cfar = false_positive_rate(sc_targets, sc_preds_mti_cfar)
 
         if verbose:
-            print(f"\n{'FPR (soundscapes)':<35} {sc_fpr_fixed:<18.4f} {sc_fpr_cfar:<18.4f}")
+            print(f"\n{'FPR (soundscapes)':<35} {sc_fpr_fixed:<18.4f} {sc_fpr_cfar:<18.4f} {sc_fpr_mti_cfar:<18.4f}")
 
     # ── Per-species threshold examples (top 10 highest / lowest) ──
     if verbose:
@@ -311,17 +345,23 @@ def evaluate(
         "auc": float(auc_val),
         "f1_fixed": float(f1_fixed_rare),
         "f1_cfar": float(f1_cfar_rare),
+        "f1_mti_cfar": float(f1_mti_cfar_rare),
         "fpr_fixed": float(fpr_fixed_val),
         "fpr_cfar": float(fpr_cfar_val),
+        "fpr_mti_cfar": float(fpr_mti_cfar_val),
         "fpr_sc_fixed": None if sc_fpr_fixed is None else float(sc_fpr_fixed),
         "fpr_sc_cfar": None if sc_fpr_cfar is None else float(sc_fpr_cfar),
+        "fpr_sc_mti_cfar": None if sc_fpr_mti_cfar is None else float(sc_fpr_mti_cfar),
         "threshold_mean": float(t_cfar.mean()),
         "threshold_std": float(t_cfar.std()),
+        "clutter_mean": float(clutter_map.mean()),
+        "clutter_max": float(clutter_map.max()),
+        "clutter_min": float(clutter_map.min()),
     }
 
 
 def save_k_sweep_plot(results: List[Dict[str, Any]], output_path: str = "k_sweep_figure.png") -> bool:
-    """Save a dual-axis k-sensitivity plot to disk."""
+    """Save dual-panel k-sensitivity plot with all 3 conditions."""
     try:
         import matplotlib
         matplotlib.use("Agg")
@@ -331,31 +371,41 @@ def save_k_sweep_plot(results: List[Dict[str, Any]], output_path: str = "k_sweep
         return False
 
     ks = [r["k"] for r in results]
-    f1s = [r["f1_cfar"] for r in results]
-    fpr_val = [r["fpr_cfar"] for r in results]
-    fpr_sc = [r["fpr_sc_cfar"] if r["fpr_sc_cfar"] is not None else np.nan for r in results]
+    f1_fixed = [r["f1_fixed"] for r in results]
+    f1_cfar = [r["f1_cfar"] for r in results]
+    f1_mti = [r["f1_mti_cfar"] for r in results]
+    fpr_fixed = [r["fpr_fixed"] for r in results]
+    fpr_cfar = [r["fpr_cfar"] for r in results]
+    fpr_mti = [r["fpr_mti_cfar"] for r in results]
 
-    fig, ax1 = plt.subplots(figsize=(8, 5))
-    ax1.plot(ks, f1s, "o-", color="#1f77b4", linewidth=2, label="Rare-Species F1")
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+
+    # Panel 1: F1 vs k
+    ax1.axhline(y=f1_fixed[0], color="gray", linestyle="--", linewidth=1.5,
+                label=f"Fixed t=0.5")
+    ax1.plot(ks, f1_cfar, "o-", color="#1f77b4", linewidth=2, label="CFAR only")
+    ax1.plot(ks, f1_mti, "s-", color="#2ca02c", linewidth=2, label="MTI-CFAR")
     ax1.set_xlabel("CFAR k")
-    ax1.set_ylabel("Rare-Species F1", color="#1f77b4")
-    ax1.tick_params(axis="y", labelcolor="#1f77b4")
+    ax1.set_ylabel("Rare-Species F1")
     ax1.set_ylim(0.0, 1.05)
     ax1.set_xticks(ks)
     ax1.grid(True, alpha=0.3)
+    ax1.legend(loc="best")
+    ax1.set_title("F1 vs k")
 
-    ax2 = ax1.twinx()
-    ax2.plot(ks, fpr_val, "s--", color="#d62728", linewidth=2, label="FPR (val)")
-    if np.isfinite(fpr_sc).any():
-        ax2.plot(ks, fpr_sc, "^--", color="#ff7f0e", linewidth=2, label="FPR (soundscapes)")
-    ax2.set_ylabel("False Positive Rate", color="#d62728")
-    ax2.tick_params(axis="y", labelcolor="#d62728")
+    # Panel 2: FPR vs k
+    ax2.axhline(y=fpr_fixed[0], color="gray", linestyle="--", linewidth=1.5,
+                label=f"Fixed t=0.5")
+    ax2.plot(ks, fpr_cfar, "o-", color="#d62728", linewidth=2, label="CFAR only")
+    ax2.plot(ks, fpr_mti, "s-", color="#ff7f0e", linewidth=2, label="MTI-CFAR")
+    ax2.set_xlabel("CFAR k")
+    ax2.set_ylabel("False Positive Rate")
+    ax2.set_xticks(ks)
+    ax2.grid(True, alpha=0.3)
+    ax2.legend(loc="best")
+    ax2.set_title("FPR vs k")
 
-    lines = ax1.get_lines() + ax2.get_lines()
-    labels = [str(line.get_label()) for line in lines]
-    ax1.legend(lines, labels, loc="best")
-
-    plt.title("Figure 1: FPR vs Rare-Species F1 Trade-off across k")
+    fig.suptitle("Figure 1: Fixed vs CFAR vs MTI-CFAR Detection Performance", fontsize=13)
     fig.tight_layout()
     plt.savefig(output_path, dpi=150)
     plt.close(fig)
@@ -391,10 +441,13 @@ def run_k_sweep(
         if metrics is None:
             continue
         results.append(metrics)
+        delta_cfar = metrics['f1_cfar'] - metrics['f1_fixed']
+        delta_mti = metrics['f1_mti_cfar'] - metrics['f1_fixed']
         print(
             f"k={k:.2f} | F1_fixed={metrics['f1_fixed']:.4f} | F1_cfar={metrics['f1_cfar']:.4f} | "
+            f"F1_mti_cfar={metrics['f1_mti_cfar']:.4f} | "
             f"FPR_fixed={metrics['fpr_fixed']:.4f} | FPR_cfar={metrics['fpr_cfar']:.4f} | "
-            f"FPR(sc)={metrics['fpr_sc_cfar'] if metrics['fpr_sc_cfar'] is not None else float('nan'):.4f}"
+            f"FPR_mti_cfar={metrics['fpr_mti_cfar']:.4f} | clutter_mean={metrics['clutter_mean']:.4f}"
         )
 
     if not results:
@@ -409,15 +462,21 @@ def run_k_sweep(
     if plotted:
         print("Saved k_sweep_figure.png")
 
-    print("\n" + "=" * 110)
-    print("k      F1_fixed   F1_cfar   Delta_F1   FPR_fixed  FPR_cfar   FPR(soundscapes)   AUC")
-    print("-" * 110)
+    print("\n" + "=" * 140)
+    print(
+        f"{'k':<6} {'F1_fixed':<10} {'F1_cfar':<10} {'F1_mti':<10} {'d_cfar':<10} {'d_mti':<10} "
+        f"{'FPR_fix':<10} {'FPR_cfar':<10} {'FPR_mti':<10} {'clutter':<10} {'AUC':<8}"
+    )
+    print("-" * 140)
     for r in results:
         fpr_sc = r["fpr_sc_cfar"] if r["fpr_sc_cfar"] is not None else float("nan")
-        delta_f1 = r["f1_cfar"] - r["f1_fixed"]
+        delta_cfar = r["f1_cfar"] - r["f1_fixed"]
+        delta_mti = r["f1_mti_cfar"] - r["f1_fixed"]
         print(
-            f"{r['k']:<6.2f} {r['f1_fixed']:<10.4f} {r['f1_cfar']:<9.4f} {delta_f1:<10.4f} "
-            f"{r['fpr_fixed']:<10.4f} {r['fpr_cfar']:<10.4f} {fpr_sc:<18.4f} {r['auc']:<8.4f}"
+            f"{r['k']:<6.2f} {r['f1_fixed']:<10.4f} {r['f1_cfar']:<10.4f} {r['f1_mti_cfar']:<10.4f} "
+            f"{delta_cfar:<10.4f} {delta_mti:<10.4f} "
+            f"{r['fpr_fixed']:<10.4f} {r['fpr_cfar']:<10.4f} {r['fpr_mti_cfar']:<10.4f} "
+            f"{r['clutter_mean']:<10.4f} {r['auc']:<8.4f}"
         )
 
     return results
