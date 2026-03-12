@@ -56,6 +56,46 @@ def cfar_adaptive_threshold(
     return thresholds
 
 
+def cfar_adaptive_threshold_with_stats(
+    probs: np.ndarray,
+    k: float = 2.0,
+    floor: float = 0.05,
+    ceiling: float = 0.95,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Compute CFAR thresholds and per-species noise sigma values.
+
+    Args:
+        probs:   (num_windows, num_species) — raw sigmoid output
+        k:       multiplier on noise std
+        floor:   minimum threshold clamp
+        ceiling: maximum threshold clamp
+
+    Returns:
+        thresholds: (num_species,) CFAR threshold vector
+        sigma_noise: (num_species,) noise std used per species
+    """
+    num_windows, num_species = probs.shape
+    thresholds = np.zeros(num_species, dtype=np.float64)
+    sigma_noise = np.zeros(num_species, dtype=np.float64)
+
+    n_noise = max(num_windows // 2, 1)
+
+    for i in range(num_species):
+        col = probs[:, i]
+        sorted_col = np.sort(col)
+        noise_samples = sorted_col[:n_noise]
+
+        mu_noise = noise_samples.mean()
+        sigma = noise_samples.std()
+        sigma_noise[i] = sigma
+
+        t = mu_noise + k * sigma
+        thresholds[i] = np.clip(t, floor, ceiling)
+
+    return thresholds, sigma_noise
+
+
 def fixed_threshold(
     probs: np.ndarray,
     t: float = 0.5,

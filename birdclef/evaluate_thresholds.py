@@ -37,7 +37,12 @@ from birdclef.config import (
 )
 from birdclef.model import BACKBONE_BUILDERS
 from birdclef.train import BirdCLEFDataset, SoundscapeDataset, load_soundscape_meta
-from birdclef.cfar_threshold import cfar_adaptive_threshold, fixed_threshold, apply_threshold
+from birdclef.cfar_threshold import (
+    cfar_adaptive_threshold,
+    cfar_adaptive_threshold_with_stats,
+    fixed_threshold,
+    apply_threshold,
+)
 
 logger = logging.getLogger("birdclef.evaluate_thresholds")
 
@@ -236,7 +241,7 @@ def evaluate(
 
     # ── Compute thresholds ─────────────────────────────────────────
     t_fixed = fixed_threshold(val_probs, t=fixed_t)
-    t_cfar = cfar_adaptive_threshold(val_probs, k=k)
+    t_cfar, sigma_noise = cfar_adaptive_threshold_with_stats(val_probs, k=k)
 
     preds_fixed = apply_threshold(val_probs, t_fixed)
     preds_cfar = apply_threshold(val_probs, t_cfar)
@@ -262,12 +267,17 @@ def evaluate(
         print(f"{'Rare-species F1 (val)':<35} {f1_fixed_rare:<18.4f} {f1_cfar_rare:<18.4f}")
         print(f"{'FPR (val)':<35} {fpr_fixed_val:<18.4f} {fpr_cfar_val:<18.4f}")
 
-        # ── CFAR threshold stats ───────────────────────────────────────
-        print(f"\nCFAR threshold stats:")
-        print(f"  min:  {t_cfar.min():.4f}")
-        print(f"  max:  {t_cfar.max():.4f}")
-        print(f"  mean: {t_cfar.mean():.4f}")
-        print(f"  std:  {t_cfar.std():.4f}")
+        # ── CFAR threshold distribution diagnostics ───────────────────
+        print(f"\nT_mean: {t_cfar.mean():.4f}")
+        print(f"T_std:  {t_cfar.std():.4f}")
+        print(f"T_min:  {t_cfar.min():.4f}")
+        print(f"T_max:  {t_cfar.max():.4f}")
+        print(f"sigma_noise mean: {sigma_noise.mean():.6f}")
+
+        # ── Fixed threshold direct comparison ─────────────────────────
+        print(f"\nFixed t=0.5:")
+        print(f"  Rare-F1: {f1_fixed_rare:.4f}")
+        print(f"  FPR: {fpr_fixed_val:.4f}")
 
     # ── Soundscape FPR (if available) ──────────────────────────────
     sc_fpr_fixed = None
@@ -382,8 +392,8 @@ def run_k_sweep(
             continue
         results.append(metrics)
         print(
-            f"k={k:.2f} | Rare-F1={metrics['f1_cfar']:.4f} | "
-            f"FPR(val)={metrics['fpr_cfar']:.4f} | "
+            f"k={k:.2f} | F1_fixed={metrics['f1_fixed']:.4f} | F1_cfar={metrics['f1_cfar']:.4f} | "
+            f"FPR_fixed={metrics['fpr_fixed']:.4f} | FPR_cfar={metrics['fpr_cfar']:.4f} | "
             f"FPR(sc)={metrics['fpr_sc_cfar'] if metrics['fpr_sc_cfar'] is not None else float('nan'):.4f}"
         )
 
@@ -399,12 +409,16 @@ def run_k_sweep(
     if plotted:
         print("Saved k_sweep_figure.png")
 
-    print("\n" + "=" * 75)
-    print("k      Rare-F1    FPR(val)   FPR(soundscapes)   AUC")
-    print("-" * 75)
+    print("\n" + "=" * 110)
+    print("k      F1_fixed   F1_cfar   Delta_F1   FPR_fixed  FPR_cfar   FPR(soundscapes)   AUC")
+    print("-" * 110)
     for r in results:
         fpr_sc = r["fpr_sc_cfar"] if r["fpr_sc_cfar"] is not None else float("nan")
-        print(f"{r['k']:<6.2f} {r['f1_cfar']:<10.4f} {r['fpr_cfar']:<10.4f} {fpr_sc:<18.4f} {r['auc']:<8.4f}")
+        delta_f1 = r["f1_cfar"] - r["f1_fixed"]
+        print(
+            f"{r['k']:<6.2f} {r['f1_fixed']:<10.4f} {r['f1_cfar']:<9.4f} {delta_f1:<10.4f} "
+            f"{r['fpr_fixed']:<10.4f} {r['fpr_cfar']:<10.4f} {fpr_sc:<18.4f} {r['auc']:<8.4f}"
+        )
 
     return results
 
