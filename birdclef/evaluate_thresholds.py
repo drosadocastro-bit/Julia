@@ -53,9 +53,13 @@ def collect_predictions(
     model: torch.nn.Module,
     loader: DataLoader,
     device: str,
+    temperature: float = 1.0,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Run model on a DataLoader, return (probs, targets) as numpy arrays.
+
+    Args:
+        temperature: sigmoid scaling factor (< 1.0 sharpens, > 1.0 softens)
 
     Returns:
         probs:   (N, num_species) sigmoid probabilities
@@ -69,7 +73,7 @@ def collect_predictions(
         for batch_x, batch_y in loader:
             batch_x = batch_x.to(device)
             logits = model(batch_x)
-            probs = torch.sigmoid(logits).cpu().numpy()
+            probs = torch.sigmoid(logits / temperature).cpu().numpy()
             all_probs.append(probs)
             all_targets.append(batch_y.numpy())
 
@@ -144,6 +148,7 @@ def evaluate(
     batch_size: int = BATCH_SIZE,
     max_samples: int | None = None,
     include_soundscapes: bool = False,
+    temperature: float = 1.0,
     verbose: bool = True,
 ):
     """
@@ -152,7 +157,7 @@ def evaluate(
     if verbose:
         print("=" * 60)
         print("  BirdCLEF 2026 — Threshold Evaluation")
-        print(f"  Backbone: {backbone} | Fixed t={fixed_t} | CFAR k={k}")
+        print(f"  Backbone: {backbone} | Fixed t={fixed_t} | CFAR k={k} | T={temperature}")
         print("=" * 60)
 
     # ── Load metadata ──────────────────────────────────────────────
@@ -218,8 +223,8 @@ def evaluate(
 
     # ── Collect validation predictions ─────────────────────────────
     if verbose:
-        print("\nCollecting validation predictions...")
-    val_probs, val_targets = collect_predictions(model, val_loader, device)
+        print(f"\nCollecting validation predictions (temperature={temperature})...")
+    val_probs, val_targets = collect_predictions(model, val_loader, device, temperature=temperature)
     if verbose:
         print(f"  Val matrix: {val_probs.shape}")
 
@@ -229,7 +234,7 @@ def evaluate(
         sc_loader = DataLoader(sc_ds, batch_size=batch_size, shuffle=False, num_workers=0)
         if verbose:
             print("Collecting soundscape predictions...")
-        sc_probs, sc_targets = collect_predictions(model, sc_loader, device)
+        sc_probs, sc_targets = collect_predictions(model, sc_loader, device, temperature=temperature)
         if verbose:
             print(f"  Soundscape matrix: {sc_probs.shape}")
 
@@ -419,11 +424,12 @@ def run_k_sweep(
     batch_size: int,
     max_samples: int | None,
     include_soundscapes: bool,
+    temperature: float = 1.0,
 ) -> List[Dict[str, Any]]:
     """Run CFAR sensitivity sweep across multiple k values."""
     print("=" * 60)
     print("  BirdCLEF 2026 — CFAR k Sensitivity Sweep")
-    print(f"  Backbone: {backbone} | k values: {k_values}")
+    print(f"  Backbone: {backbone} | k values: {k_values} | T={temperature}")
     print("=" * 60)
 
     results: List[Dict[str, Any]] = []
@@ -436,6 +442,7 @@ def run_k_sweep(
             batch_size=batch_size,
             max_samples=max_samples,
             include_soundscapes=include_soundscapes,
+            temperature=temperature,
             verbose=False,
         )
         if metrics is None:
@@ -497,6 +504,8 @@ def main():
                         help="Also evaluate on soundscape windows")
     parser.add_argument("--k-sweep", type=float, nargs="+", default=None,
                         help="Run sensitivity sweep for a list of k values (e.g. --k-sweep 1.0 1.5 2.0)")
+    parser.add_argument("--temperature", type=float, default=1.0,
+                        help="Sigmoid temperature scaling (< 1.0 sharpens logits, default: 1.0)")
 
     args = parser.parse_args()
     if args.k_sweep:
@@ -507,6 +516,7 @@ def main():
             batch_size=args.batch_size,
             max_samples=args.max_samples,
             include_soundscapes=args.include_soundscapes,
+            temperature=args.temperature,
         )
     else:
         evaluate(
@@ -516,6 +526,7 @@ def main():
             batch_size=args.batch_size,
             max_samples=args.max_samples,
             include_soundscapes=args.include_soundscapes,
+            temperature=args.temperature,
         )
 
 

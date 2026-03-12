@@ -148,10 +148,12 @@ class BirdClassifier:
         backbone: str = "efficientnet_b0",
         model_dir: Path = MODEL_DIR,
         device: Optional[str] = None,
+        temperature: float = 1.0,
     ):
         self.backbone_name = backbone
         self.model_dir = Path(model_dir)
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.temperature = temperature
         self.model: Optional[nn.Module] = None
         self.labels: List[str] = []
         self.is_loaded = False
@@ -202,7 +204,7 @@ class BirdClassifier:
 
         with torch.no_grad():
             logits = self.model(x)
-            probs = torch.sigmoid(logits).squeeze(0).cpu()
+            probs = torch.sigmoid(logits / self.temperature).squeeze(0).cpu()
 
         return probs
 
@@ -224,7 +226,7 @@ class BirdClassifier:
 
         with torch.no_grad():
             logits = self.model(batch)
-            probs = torch.sigmoid(logits).cpu()
+            probs = torch.sigmoid(logits / self.temperature).cpu()
 
         return probs
 
