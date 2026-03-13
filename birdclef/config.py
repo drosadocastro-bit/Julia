@@ -81,6 +81,7 @@ FMAX = 14000                 # Max frequency (Hz) — bird vocalizations
 MAX_LABEL_COUNT = 234        # Exact count from taxonomy.csv species_code column
 MODEL_FILENAME = "birdclef_model.pt"
 LABELS_FILENAME = "birdclef_labels.json"
+TRAINING_METADATA_FILENAME = "birdclef_training_metadata.json"
 
 # ── Training Hyperparameters ───────────────────────────────────────
 BATCH_SIZE = 32

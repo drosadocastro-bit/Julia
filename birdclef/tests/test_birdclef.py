@@ -170,6 +170,53 @@ class TestTrainingUtils:
         assert torch.equal(mx, x)
         assert torch.equal(my, y)
 
+    def test_multilabel_focal_loss_returns_scalar(self):
+        """Focal loss should reduce to a single finite scalar by default."""
+        from birdclef.train import MultilabelFocalLoss
+
+        logits = torch.tensor([[2.0, -1.0], [-0.5, 1.5]], dtype=torch.float32)
+        targets = torch.tensor([[1.0, 0.0], [0.0, 1.0]], dtype=torch.float32)
+
+        loss = MultilabelFocalLoss(alpha=0.25, gamma=2.0)(logits, targets)
+        assert loss.ndim == 0
+        assert torch.isfinite(loss)
+        assert loss.item() >= 0.0
+
+    def test_multilabel_focal_loss_downweights_easy_examples(self):
+        """Easy correctly classified examples should have lower focal loss."""
+        from birdclef.train import MultilabelFocalLoss
+
+        criterion = MultilabelFocalLoss(alpha=0.25, gamma=2.0, reduction="none")
+        easy_logits = torch.tensor([[6.0, -6.0]], dtype=torch.float32)
+        hard_logits = torch.tensor([[0.2, -0.2]], dtype=torch.float32)
+        targets = torch.tensor([[1.0, 0.0]], dtype=torch.float32)
+
+        easy_loss = criterion(easy_logits, targets).mean()
+        hard_loss = criterion(hard_logits, targets).mean()
+        assert easy_loss < hard_loss
+
+    def test_build_training_metadata_records_loss(self):
+        """Saved training metadata should clearly record the active loss."""
+        from birdclef.train import build_training_metadata
+
+        metadata = build_training_metadata(
+            backbone="small",
+            loss_name="focal",
+            epochs=10,
+            batch_size=8,
+            lr=1e-3,
+            use_mixup=True,
+            include_soundscapes=False,
+            use_weighted_bce=True,
+            best_val_loss=0.1234,
+        )
+
+        assert metadata["loss"] == "focal"
+        assert metadata["backbone"] == "small"
+        assert metadata["focal_alpha"] == 0.25
+        assert metadata["focal_gamma"] == 2.0
+        assert metadata["weighted_bce"] is False
+
 
 # ════════════════════════════════════════════════════════════════════
 # Section 4: Config Sanity

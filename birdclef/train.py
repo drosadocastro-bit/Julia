@@ -7,6 +7,7 @@ Supports mixup augmentation and multi-backbone selection.
 Usage (local):
     python -m birdclef.train --backbone efficientnet_b0 --epochs 30
     python -m birdclef.train --backbone small --epochs 10 --fast
+    python -m birdclef.train --backbone small --loss focal --epochs 10 --fast
 """
 
 import argparse
@@ -27,7 +28,7 @@ from torch.utils.data import Dataset, DataLoader
 from birdclef.config import (
     TRAIN_AUDIO_DIR, TRAIN_META_CSV, MODEL_DIR,
     TRAIN_SOUNDSCAPES_DIR, TRAIN_SOUNDSCAPES_LABELS_CSV,
-    MODEL_FILENAME, LABELS_FILENAME,
+    MODEL_FILENAME, LABELS_FILENAME, TRAINING_METADATA_FILENAME,
     SAMPLE_RATE, WINDOW_SECONDS,
     BATCH_SIZE, LEARNING_RATE, EPOCHS, TRAIN_SPLIT, MIXUP_ALPHA,
 )
@@ -215,6 +216,75 @@ def compute_class_weights(
     return w
 
 
+class MultilabelFocalLoss(nn.Module):
+    """
+    Standard multilabel focal loss built on BCE-with-logits.
+
+    Args:
+        alpha: positive-class balancing factor
+        gamma: focal focusing parameter
+        reduction: reduction mode for batch aggregation
+    """
+
+    def __init__(
+        self,
+        alpha: float = 0.25,
+        gamma: float = 2.0,
+        reduction: str = "mean",
+    ):
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        bce = nn.functional.binary_cross_entropy_with_logits(
+            logits,
+            targets,
+            reduction="none",
+        )
+        probs = torch.sigmoid(logits)
+        pt = probs * targets + (1.0 - probs) * (1.0 - targets)
+        alpha_t = self.alpha * targets + (1.0 - self.alpha) * (1.0 - targets)
+        focal_weight = alpha_t * torch.pow(1.0 - pt, self.gamma)
+        loss = focal_weight * bce
+
+        if self.reduction == "sum":
+            return loss.sum()
+        if self.reduction == "none":
+            return loss
+        return loss.mean()
+
+
+def build_training_metadata(
+    backbone: str,
+    loss_name: str,
+    epochs: int,
+    batch_size: int,
+    lr: float,
+    use_mixup: bool,
+    include_soundscapes: bool,
+    use_weighted_bce: bool,
+    best_val_loss: float,
+) -> dict:
+    """Build a small JSON-serializable summary for the saved checkpoint."""
+    metadata = {
+        "backbone": backbone,
+        "loss": loss_name,
+        "epochs": epochs,
+        "batch_size": batch_size,
+        "learning_rate": lr,
+        "mixup": use_mixup,
+        "include_soundscapes": include_soundscapes,
+        "weighted_bce": use_weighted_bce if loss_name == "bce" else False,
+        "best_val_loss": best_val_loss,
+    }
+    if loss_name == "focal":
+        metadata["focal_alpha"] = 0.25
+        metadata["focal_gamma"] = 2.0
+    return metadata
+
+
 # ═══════════════════════════════════════════════════════════════════
 # Mixup Augmentation
 # ═══════════════════════════════════════════════════════════════════
@@ -248,6 +318,7 @@ def train(
     epochs: int = EPOCHS,
     batch_size: int = BATCH_SIZE,
     lr: float = LEARNING_RATE,
+    loss_name: str = "bce",
     use_mixup: bool = True,
     fast: bool = False,
     max_samples: int | None = None,
@@ -262,12 +333,13 @@ def train(
         epochs: Number of training epochs
         batch_size: Batch size for DataLoader
         lr: Learning rate
+        loss_name: Loss function to use ("bce" or "focal")
         use_mixup: Whether to apply mixup augmentation
         fast: If True, use only 10% of data (for quick iteration)
     """
     print("=" * 60)
     print("  BirdCLEF 2026 — Training Pipeline")
-    print(f"  Backbone: {backbone} | Epochs: {epochs}")
+    print(f"  Backbone: {backbone} | Epochs: {epochs} | Loss: {loss_name}")
     print("=" * 60)
 
     # ── Load metadata ──────────────────────────────────────────────
@@ -334,12 +406,16 @@ def train(
     print(f"Device: {device}")
 
     # ── Loss + Optimizer ───────────────────────────────────────────
-    if use_weighted_bce:
+    if loss_name == "focal":
+        criterion = MultilabelFocalLoss(alpha=0.25, gamma=2.0)
+        print("Focal loss: alpha=0.25, gamma=2.0")
+    elif use_weighted_bce:
         pos_weight = compute_class_weights(meta, labels, label_col).to(device)
         criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
         print(f"Weighted BCE: min_w={pos_weight.min():.3f}, max_w={pos_weight.max():.3f}, mean={pos_weight.mean():.3f}")
     else:
         criterion = nn.BCEWithLogitsLoss()
+        print("Loss: BCEWithLogitsLoss")
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
@@ -393,7 +469,21 @@ def train(
             torch.save(model.state_dict(), MODEL_DIR / MODEL_FILENAME)
             with open(MODEL_DIR / LABELS_FILENAME, "w", encoding="utf-8") as f:
                 json.dump(labels, f)
+            metadata = build_training_metadata(
+                backbone=backbone,
+                loss_name=loss_name,
+                epochs=epochs,
+                batch_size=batch_size,
+                lr=lr,
+                use_mixup=use_mixup,
+                include_soundscapes=include_soundscapes,
+                use_weighted_bce=use_weighted_bce,
+                best_val_loss=avg_val,
+            )
+            with open(MODEL_DIR / TRAINING_METADATA_FILENAME, "w", encoding="utf-8") as f:
+                json.dump(metadata, f, indent=2)
             print(f"  -> Saved best model (val_loss={avg_val:.4f})")
+            print(f"  -> Saved training metadata ({TRAINING_METADATA_FILENAME})")
 
     print("=" * 60)
     print(f"Training complete. Best val loss: {best_val_loss:.4f}")
@@ -412,6 +502,8 @@ def main():
     parser.add_argument("--epochs", type=int, default=EPOCHS)
     parser.add_argument("--batch-size", type=int, default=BATCH_SIZE)
     parser.add_argument("--lr", type=float, default=LEARNING_RATE)
+    parser.add_argument("--loss", default="bce", choices=["bce", "focal"],
+                        help="Training loss: standard BCE or multilabel focal loss")
     parser.add_argument("--no-mixup", action="store_true")
     parser.add_argument("--fast", action="store_true", help="Use 10%% of data for quick iteration")
     parser.add_argument("--max-samples", type=int, default=None,
@@ -427,6 +519,7 @@ def main():
         epochs=args.epochs,
         batch_size=args.batch_size,
         lr=args.lr,
+        loss_name=args.loss,
         use_mixup=not args.no_mixup,
         fast=args.fast,
         max_samples=args.max_samples,
