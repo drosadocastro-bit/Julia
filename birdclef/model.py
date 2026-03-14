@@ -121,6 +121,35 @@ def build_perch(num_species: int) -> nn.Module:
     return base
 
 
+def build_efficientnet_b2(num_species: int) -> nn.Module:
+    """
+    EfficientNet-B2 — larger capacity than B0 for stronger representation.
+    ~9M params, heavier than B0 but still feasible on CPU within 90 min.
+    """
+    from torchvision.models import efficientnet_b2, EfficientNet_B2_Weights
+
+    base = efficientnet_b2(weights=EfficientNet_B2_Weights.DEFAULT)
+    in_features = base.classifier[1].in_features
+    base.classifier = nn.Sequential(
+        nn.Dropout(0.3),
+        nn.Linear(in_features, num_species),
+    )
+    return base
+
+
+def build_convnext_tiny(num_species: int) -> nn.Module:
+    """
+    ConvNeXt-Tiny — modern pure-ConvNet with strong ImageNet performance.
+    ~28M params, competitive with ViT-Small on spectrograms.
+    """
+    from torchvision.models import convnext_tiny, ConvNeXt_Tiny_Weights
+
+    base = convnext_tiny(weights=ConvNeXt_Tiny_Weights.DEFAULT)
+    in_features = base.classifier[2].in_features
+    base.classifier[2] = nn.Linear(in_features, num_species)
+    return base
+
+
 # ═══════════════════════════════════════════════════════════════════
 # Classifier Wrapper
 # ═══════════════════════════════════════════════════════════════════
@@ -128,7 +157,9 @@ def build_perch(num_species: int) -> nn.Module:
 BACKBONE_BUILDERS = {
     "small": BirdSmallCNN,
     "efficientnet_b0": build_efficientnet_b0,
+    "efficientnet_b2": build_efficientnet_b2,
     "mobilenet_v2": build_mobilenet_v2,
+    "convnext_tiny": build_convnext_tiny,
     "perch": build_perch,
 }
 
