@@ -8,6 +8,7 @@ Usage (local):
     python -m birdclef.train --backbone efficientnet_b0 --epochs 30
     python -m birdclef.train --backbone small --epochs 10 --fast
     python -m birdclef.train --backbone small --loss focal --epochs 10 --fast
+    python -m birdclef.train --smart-crop output/smart_crop_manifest.csv --epochs 30
 """
 
 import argparse
@@ -26,7 +27,7 @@ import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
 
 from birdclef.config import (
-    TRAIN_AUDIO_DIR, TRAIN_META_CSV, MODEL_DIR,
+    TRAIN_AUDIO_DIR, TRAIN_META_CSV, MODEL_DIR, OUTPUT_DIR,
     TRAIN_SOUNDSCAPES_DIR, TRAIN_SOUNDSCAPES_LABELS_CSV,
     MODEL_FILENAME, LABELS_FILENAME, TRAINING_METADATA_FILENAME,
     SAMPLE_RATE, WINDOW_SECONDS,
@@ -106,6 +107,56 @@ class BirdCLEFDataset(Dataset):
                         target[self.label_to_idx[s]] = 1.0
             except (json.JSONDecodeError, TypeError):
                 pass
+
+        return tensor, target
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Smart Crop Dataset (CFAR-filtered windows)
+# ═══════════════════════════════════════════════════════════════════
+
+class SmartCropDataset(Dataset):
+    """
+    Loads pre-selected CFAR-filtered windows from a smart_crop_manifest.csv.
+
+    Each row in the manifest specifies a file + offset, so we load exactly
+    the windows that passed the energy CFAR gate — no random offsets.
+    """
+
+    def __init__(
+        self,
+        manifest: pd.DataFrame,
+        audio_dir: Path,
+        labels: List[str],
+        max_duration: float = WINDOW_SECONDS,
+    ):
+        self.manifest = manifest.reset_index(drop=True)
+        self.audio_dir = audio_dir
+        self.label_to_idx = {lbl: i for i, lbl in enumerate(labels)}
+        self.num_labels = len(labels)
+        self.max_duration = max_duration
+
+    def __len__(self):
+        return len(self.manifest)
+
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        row = self.manifest.iloc[idx]
+        filepath = self.audio_dir / row["filename"]
+        offset = float(row["offset_seconds"])
+
+        try:
+            y = load_audio_window(filepath, offset_seconds=offset, duration=self.max_duration)
+            mel = audio_to_melspec(y)
+            tensor = melspec_to_tensor(mel)
+        except Exception as e:
+            logger.warning(f"SmartCrop: failed to process {filepath}@{offset}s: {e}. Returning silence.")
+            tensor = torch.zeros(3, 224, 224)
+
+        # Build multilabel target from species column
+        target = torch.zeros(self.num_labels, dtype=torch.float32)
+        species = row.get("species", "")
+        if species in self.label_to_idx:
+            target[self.label_to_idx[species]] = 1.0
 
         return tensor, target
 
@@ -265,7 +316,8 @@ def build_training_metadata(
     use_mixup: bool,
     include_soundscapes: bool,
     use_weighted_bce: bool,
-    best_val_loss: float,
+    smart_crop: bool = False,
+    best_val_loss: float = float("inf"),
 ) -> dict:
     """Build a small JSON-serializable summary for the saved checkpoint."""
     metadata = {
@@ -277,6 +329,7 @@ def build_training_metadata(
         "mixup": use_mixup,
         "include_soundscapes": include_soundscapes,
         "weighted_bce": use_weighted_bce if loss_name == "bce" else False,
+        "smart_crop": smart_crop,
         "best_val_loss": best_val_loss,
     }
     if loss_name == "focal":
@@ -324,6 +377,7 @@ def train(
     max_samples: int | None = None,
     include_soundscapes: bool = False,
     use_weighted_bce: bool = True,
+    smart_crop: str | None = None,
 ):
     """
     Full training pipeline.
@@ -340,6 +394,8 @@ def train(
     print("=" * 60)
     print("  BirdCLEF 2026 — Training Pipeline")
     print(f"  Backbone: {backbone} | Epochs: {epochs} | Loss: {loss_name}")
+    if smart_crop:
+        print(f"  Smart Crop: {smart_crop}")
     print("=" * 60)
 
     # ── Load metadata ──────────────────────────────────────────────
@@ -380,8 +436,34 @@ def train(
     val_meta = meta.iloc[split_idx:]
     print(f"Train: {len(train_meta)} | Val: {len(val_meta)}")
 
-    train_ds = BirdCLEFDataset(train_meta, TRAIN_AUDIO_DIR, labels, augment=True)
-    val_ds = BirdCLEFDataset(val_meta, TRAIN_AUDIO_DIR, labels, augment=False)
+    # ── Dataset selection: smart-crop vs standard ──────────────────
+    if smart_crop:
+        manifest_path = Path(smart_crop)
+        if not manifest_path.is_absolute():
+            manifest_path = OUTPUT_DIR / manifest_path
+        if not manifest_path.exists():
+            print(f"ERROR: Smart crop manifest not found: {manifest_path}")
+            print("Run smart crop first:  python -m birdclef.smart_crop")
+            return
+
+        sc_manifest = pd.read_csv(manifest_path)
+        print(f"Smart crop manifest: {len(sc_manifest)} pre-filtered windows")
+
+        # Split manifest by filename for train/val
+        sc_files = sc_manifest["filename"].unique()
+        sc_split_idx = int(len(sc_files) * TRAIN_SPLIT)
+        train_files = set(sc_files[:sc_split_idx])
+        val_files = set(sc_files[sc_split_idx:])
+
+        train_manifest = sc_manifest[sc_manifest["filename"].isin(train_files)]
+        val_manifest = sc_manifest[sc_manifest["filename"].isin(val_files)]
+
+        train_ds = SmartCropDataset(train_manifest, TRAIN_AUDIO_DIR, labels)
+        val_ds = SmartCropDataset(val_manifest, TRAIN_AUDIO_DIR, labels)
+        print(f"Smart crop split: Train {len(train_ds)} | Val {len(val_ds)} windows")
+    else:
+        train_ds = BirdCLEFDataset(train_meta, TRAIN_AUDIO_DIR, labels, augment=True)
+        val_ds = BirdCLEFDataset(val_meta, TRAIN_AUDIO_DIR, labels, augment=False)
 
     # ── Optionally merge soundscape windows into training set ──────
     if include_soundscapes:
@@ -478,6 +560,7 @@ def train(
                 use_mixup=use_mixup,
                 include_soundscapes=include_soundscapes,
                 use_weighted_bce=use_weighted_bce,
+                smart_crop=smart_crop is not None,
                 best_val_loss=avg_val,
             )
             with open(MODEL_DIR / TRAINING_METADATA_FILENAME, "w", encoding="utf-8") as f:
@@ -512,6 +595,8 @@ def main():
                         help="Merge train_soundscapes labeled windows into training data")
     parser.add_argument("--no-weighted-bce", action="store_true",
                         help="Disable class-weighted BCE loss")
+    parser.add_argument("--smart-crop", type=str, default=None,
+                        help="Path to smart_crop_manifest.csv (CFAR-filtered windows)")
 
     args = parser.parse_args()
     train(
@@ -525,6 +610,7 @@ def main():
         max_samples=args.max_samples,
         include_soundscapes=args.include_soundscapes,
         use_weighted_bce=not args.no_weighted_bce,
+        smart_crop=args.smart_crop,
     )
 
 
