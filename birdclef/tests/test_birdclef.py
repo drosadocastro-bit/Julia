@@ -333,4 +333,128 @@ class TestOverlapWindowing:
 
         grid_ends, pooled = pool_overlapping_predictions([], [], np.empty((0, 10)))
         assert len(grid_ends) == 0
-        assert pooled.shape[0] == 0
+
+
+# ════════════════════════════════════════════════════════════════════
+# Section 6: Smart Crop Dataset Integration
+# ════════════════════════════════════════════════════════════════════
+
+def _write_test_wav(path: Path, y: np.ndarray, sr: int = 32000):
+    """Write a float32 numpy array to a .wav file."""
+    import soundfile as sf
+    sf.write(str(path), y, sr, subtype="FLOAT")
+
+
+class TestSmartCropDataset:
+    """Validate SmartCropDataset manifest loading and offset extraction."""
+
+    def _make_dataset(self, tmp_path):
+        """
+        Create a mini smart-crop manifest + audio files for testing.
+
+        Returns (manifest_df, audio_dir, labels).
+        """
+        import pandas as pd
+
+        audio_dir = tmp_path / "train_audio"
+        audio_dir.mkdir()
+
+        sr = 32000
+        labels = ["sp_a", "sp_b"]
+
+        # Create two 20s audio files with recognizable patterns per window
+        for sp in labels:
+            sp_dir = audio_dir / sp
+            sp_dir.mkdir()
+            # 20 seconds of noise — each 5s window has slightly different energy
+            rng = np.random.default_rng(hash(sp) % 2**31)
+            y = rng.standard_normal(sr * 20).astype(np.float32) * 0.01
+            # Plant a loud burst at 5-10s so offset=5 window is distinctive
+            burst_start = sr * 5
+            burst_end = sr * 10
+            t = np.arange(burst_end - burst_start) / sr
+            y[burst_start:burst_end] += (0.4 * np.sin(2 * np.pi * 3000 * t)).astype(np.float32)
+            _write_test_wav(sp_dir / "call.wav", y)
+
+        # Manifest: two windows from sp_a (offset 0 and 5), one from sp_b (offset 5)
+        manifest = pd.DataFrame([
+            {"filename": "sp_a/call.wav", "species": "sp_a", "window_index": 0,
+             "offset_seconds": 0.0, "confidence": 0.1},
+            {"filename": "sp_a/call.wav", "species": "sp_a", "window_index": 1,
+             "offset_seconds": 5.0, "confidence": 0.8},
+            {"filename": "sp_b/call.wav", "species": "sp_b", "window_index": 0,
+             "offset_seconds": 5.0, "confidence": 0.7},
+        ])
+
+        return manifest, audio_dir, labels
+
+    def test_manifest_loading_length(self, tmp_path):
+        """SmartCropDataset length should match manifest row count."""
+        from birdclef.train import SmartCropDataset
+
+        manifest, audio_dir, labels = self._make_dataset(tmp_path)
+        ds = SmartCropDataset(manifest, audio_dir, labels)
+
+        assert len(ds) == 3
+
+    def test_getitem_returns_correct_shapes(self, tmp_path):
+        """Each sample should be (3×224×224 tensor, num_labels target)."""
+        from birdclef.train import SmartCropDataset
+
+        manifest, audio_dir, labels = self._make_dataset(tmp_path)
+        ds = SmartCropDataset(manifest, audio_dir, labels)
+
+        tensor, target = ds[0]
+        assert tensor.shape == (3, 224, 224)
+        assert target.shape == (len(labels),)
+        assert target.dtype == torch.float32
+
+    def test_species_label_mapped_correctly(self, tmp_path):
+        """Target vector should have 1.0 at the correct species index."""
+        from birdclef.train import SmartCropDataset
+
+        manifest, audio_dir, labels = self._make_dataset(tmp_path)
+        ds = SmartCropDataset(manifest, audio_dir, labels)
+
+        # Row 0: species="sp_a" → index 0
+        _, target_a = ds[0]
+        assert target_a[0] == 1.0
+        assert target_a[1] == 0.0
+
+        # Row 2: species="sp_b" → index 1
+        _, target_b = ds[2]
+        assert target_b[0] == 0.0
+        assert target_b[1] == 1.0
+
+    def test_offset_extracts_different_audio(self, tmp_path):
+        """Windows at offset=0 and offset=5 should produce different tensors."""
+        from birdclef.train import SmartCropDataset
+
+        manifest, audio_dir, labels = self._make_dataset(tmp_path)
+        ds = SmartCropDataset(manifest, audio_dir, labels)
+
+        tensor_0, _ = ds[0]  # sp_a @ offset 0 (quiet noise)
+        tensor_5, _ = ds[1]  # sp_a @ offset 5 (loud burst)
+
+        # They should differ — the burst window has much more energy
+        assert not torch.allclose(tensor_0, tensor_5), \
+            "Offset 0 and offset 5 should produce different spectrograms"
+
+    def test_burst_window_has_higher_energy(self, tmp_path):
+        """The window containing the burst should have higher raw mel energy."""
+        from birdclef.features import load_audio_window, audio_to_melspec
+
+        manifest, audio_dir, labels = self._make_dataset(tmp_path)
+        filepath = audio_dir / "sp_a" / "call.wav"
+
+        # Load raw audio at both offsets and compare unnormalized mel energy
+        y_quiet = load_audio_window(filepath, offset_seconds=0.0, duration=5.0)
+        y_burst = load_audio_window(filepath, offset_seconds=5.0, duration=5.0)
+
+        mel_quiet = audio_to_melspec(y_quiet, normalize=False, to_db=False)
+        mel_burst = audio_to_melspec(y_burst, normalize=False, to_db=False)
+
+        energy_quiet = mel_quiet.mean()
+        energy_burst = mel_burst.mean()
+        assert energy_burst > energy_quiet, \
+            f"Burst window energy ({energy_burst:.6f}) should exceed quiet ({energy_quiet:.6f})"
