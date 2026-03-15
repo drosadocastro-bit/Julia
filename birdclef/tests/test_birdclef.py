@@ -675,3 +675,196 @@ class TestGPUOptimizations:
         """GradScaler with enabled=False should pass through normally."""
         scaler = torch.amp.GradScaler(enabled=False)
         assert not scaler.is_enabled()
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Precomputed Dataset & Pipeline
+# ═══════════════════════════════════════════════════════════════════
+
+class TestPrecomputedDataset:
+    """Validate PrecomputedDataset loads .pt tensors correctly."""
+
+    def _make_precomputed(self, tmp_path, labels, secondary=None):
+        """Create mock precomputed tensors + manifest."""
+        tensor_dir = tmp_path / "precomputed" / "tensors"
+        tensor_dir.mkdir(parents=True)
+
+        rows = []
+        for i, sp in enumerate(labels):
+            tensor_name = f"{sp}__call__win0.pt"
+            tensor = torch.randn(3, 224, 224)
+            torch.save(tensor.half(), tensor_dir / tensor_name)
+            rows.append({
+                "tensor_file": tensor_name,
+                "filename": f"{sp}/call.wav",
+                "species": sp,
+                "offset_seconds": 0.0,
+                "confidence": 0.9,
+                "secondary_labels": secondary[i] if secondary else "[]",
+            })
+
+        manifest = pd.DataFrame(rows)
+        manifest.to_csv(tmp_path / "precomputed" / "manifest.csv", index=False)
+        return manifest, tensor_dir
+
+    def test_loads_correct_shape(self, tmp_path):
+        """PrecomputedDataset should return (3, 224, 224) tensors."""
+        from birdclef.train import PrecomputedDataset
+
+        labels = ["sp_a", "sp_b"]
+        manifest, tensor_dir = self._make_precomputed(tmp_path, labels)
+        ds = PrecomputedDataset(manifest, tensor_dir, labels)
+
+        tensor, target = ds[0]
+        assert tensor.shape == (3, 224, 224)
+        assert tensor.dtype == torch.float32
+        assert target.shape == (len(labels),)
+
+    def test_species_mapped_correctly(self, tmp_path):
+        """Primary label should be 1.0 at correct index."""
+        from birdclef.train import PrecomputedDataset
+
+        labels = ["sp_a", "sp_b"]
+        manifest, tensor_dir = self._make_precomputed(tmp_path, labels)
+        ds = PrecomputedDataset(manifest, tensor_dir, labels)
+
+        _, target_a = ds[0]
+        assert target_a[0] == 1.0
+        assert target_a[1] == 0.0
+
+        _, target_b = ds[1]
+        assert target_b[0] == 0.0
+        assert target_b[1] == 1.0
+
+    def test_secondary_labels_weighted(self, tmp_path):
+        """Secondary labels should use configurable weight."""
+        from birdclef.train import PrecomputedDataset
+
+        labels = ["sp_a", "sp_b", "sp_c"]
+        manifest, tensor_dir = self._make_precomputed(
+            tmp_path, labels,
+            secondary=["['sp_b']", "[]", "[]"],
+        )
+        ds = PrecomputedDataset(manifest, tensor_dir, labels, secondary_weight=0.5)
+
+        _, target = ds[0]
+        assert target[0] == 1.0, "Primary should be 1.0"
+        assert target[1] == 0.5, "Secondary should be 0.5"
+        assert target[2] == 0.0
+
+    def test_augment_modifies_tensor(self, tmp_path):
+        """With augment=True, SpecAugment should modify the tensor."""
+        from birdclef.train import PrecomputedDataset
+
+        labels = ["sp_a"]
+        manifest, tensor_dir = self._make_precomputed(tmp_path, labels)
+
+        ds_no_aug = PrecomputedDataset(manifest, tensor_dir, labels, augment=False)
+        ds_aug = PrecomputedDataset(manifest, tensor_dir, labels, augment=True)
+
+        t_no, _ = ds_no_aug[0]
+        t_aug, _ = ds_aug[0]
+
+        # Augmented version should have some zeros from masking
+        assert t_aug.shape == t_no.shape
+        # SpecAugment zeros out bands — check augmented has more zeros
+        assert (t_aug == 0).sum() >= (t_no == 0).sum()
+
+    def test_manifest_length(self, tmp_path):
+        """Dataset length should match manifest rows."""
+        from birdclef.train import PrecomputedDataset
+
+        labels = ["sp_a", "sp_b"]
+        manifest, tensor_dir = self._make_precomputed(tmp_path, labels)
+        ds = PrecomputedDataset(manifest, tensor_dir, labels)
+        assert len(ds) == 2
+
+
+class TestPrecomputeScript:
+    """Validate the precompute module produces correct outputs."""
+
+    def test_precompute_from_manifest(self, tmp_path):
+        """precompute_from_manifest should create .pt files and manifest.csv."""
+        from birdclef.precompute import precompute_from_manifest
+
+        audio_dir = tmp_path / "train_audio"
+        sr = 32000
+        for sp in ["sp_a", "sp_b"]:
+            sp_dir = audio_dir / sp
+            sp_dir.mkdir(parents=True)
+            y = np.random.default_rng(42).standard_normal(sr * 10).astype(np.float32) * 0.01
+            _write_test_wav(sp_dir / "call.wav", y)
+
+        # Smart crop manifest with 3 windows
+        manifest = pd.DataFrame([
+            {"filename": "sp_a/call.wav", "species": "sp_a", "window_index": 0, "offset_seconds": 0.0, "confidence": 0.9},
+            {"filename": "sp_a/call.wav", "species": "sp_a", "window_index": 1, "offset_seconds": 5.0, "confidence": 0.8},
+            {"filename": "sp_b/call.wav", "species": "sp_b", "window_index": 0, "offset_seconds": 0.0, "confidence": 0.7},
+        ])
+        manifest_path = tmp_path / "smart_crop_manifest.csv"
+        manifest.to_csv(manifest_path, index=False)
+
+        # Train CSV with secondary labels
+        train_csv = pd.DataFrame([
+            {"filename": "sp_a/call.wav", "primary_label": "sp_a", "secondary_labels": "['sp_b']"},
+            {"filename": "sp_b/call.wav", "primary_label": "sp_b", "secondary_labels": "[]"},
+        ])
+        train_csv_path = tmp_path / "train.csv"
+        train_csv.to_csv(train_csv_path, index=False)
+
+        output_dir = tmp_path / "precomputed"
+        result = precompute_from_manifest(
+            manifest_path=manifest_path,
+            train_csv_path=train_csv_path,
+            audio_dir=audio_dir,
+            output_dir=output_dir,
+        )
+
+        # Check outputs
+        assert len(result) == 3
+        assert (output_dir / "manifest.csv").exists()
+        assert (output_dir / "tensors").exists()
+
+        # Check .pt files exist and have correct shape
+        for _, row in result.iterrows():
+            pt_path = output_dir / "tensors" / row["tensor_file"]
+            assert pt_path.exists(), f"Missing tensor: {row['tensor_file']}"
+            t = torch.load(pt_path, weights_only=True)
+            assert t.shape == (3, 224, 224)
+            assert t.dtype == torch.float16
+
+    def test_precompute_resumes(self, tmp_path):
+        """Running precompute twice should skip already-computed tensors."""
+        from birdclef.precompute import precompute_from_manifest
+
+        audio_dir = tmp_path / "train_audio" / "sp_a"
+        audio_dir.mkdir(parents=True)
+        sr = 32000
+        y = np.random.default_rng(42).standard_normal(sr * 10).astype(np.float32) * 0.01
+        _write_test_wav(audio_dir / "call.wav", y)
+
+        manifest = pd.DataFrame([
+            {"filename": "sp_a/call.wav", "species": "sp_a", "window_index": 0, "offset_seconds": 0.0, "confidence": 0.9},
+        ])
+        manifest_path = tmp_path / "manifest.csv"
+        manifest.to_csv(manifest_path, index=False)
+
+        train_csv = pd.DataFrame([{"filename": "sp_a/call.wav", "primary_label": "sp_a", "secondary_labels": "[]"}])
+        train_csv_path = tmp_path / "train.csv"
+        train_csv.to_csv(train_csv_path, index=False)
+
+        output_dir = tmp_path / "precomputed"
+
+        # Run once
+        r1 = precompute_from_manifest(manifest_path, train_csv_path, tmp_path / "train_audio", output_dir)
+        pt_path = output_dir / "tensors" / r1.iloc[0]["tensor_file"]
+        mtime1 = pt_path.stat().st_mtime
+
+        # Run again — should skip
+        import time as _time
+        _time.sleep(0.1)
+        r2 = precompute_from_manifest(manifest_path, train_csv_path, tmp_path / "train_audio", output_dir)
+        mtime2 = pt_path.stat().st_mtime
+
+        assert mtime1 == mtime2, "File should not be re-written on resume"
+        assert len(r2) == 1

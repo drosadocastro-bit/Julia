@@ -12,6 +12,10 @@ Usage (local):
 
 Usage (Colab H100):
     python -m birdclef.train --backbone efficientnet_b2 --epochs 30 --batch-size 128 --num-workers 4
+
+Usage (Colab with precomputed tensors — fastest):
+    python -m birdclef.precompute --manifest output/smart_crop_manifest.csv
+    python -m birdclef.train --precomputed birdclef/output/precomputed --epochs 30 --batch-size 128
 """
 
 import argparse
@@ -188,6 +192,71 @@ class SmartCropDataset(Dataset):
 
         # Secondary labels from original metadata
         secondary = self._sec_lookup.get(row.get("filename", ""), "")
+        if isinstance(secondary, str) and secondary.strip():
+            try:
+                sec_labels = json.loads(secondary.replace("'", '"'))
+                for s in sec_labels:
+                    if s in self.label_to_idx:
+                        target[self.label_to_idx[s]] = self.secondary_weight
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        return tensor, target
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Precomputed Dataset (zero audio I/O in training loop)
+# ═══════════════════════════════════════════════════════════════════
+
+class PrecomputedDataset(Dataset):
+    """
+    Loads pre-computed mel-spectrogram .pt tensors from disk.
+
+    Eliminates all librosa/audio I/O from the training loop.
+    Produced by: python -m birdclef.precompute
+    """
+
+    def __init__(
+        self,
+        manifest: pd.DataFrame,
+        tensor_dir: Path,
+        labels: List[str],
+        augment: bool = False,
+        secondary_weight: float = 0.5,
+    ):
+        self.manifest = manifest.reset_index(drop=True)
+        self.tensor_dir = tensor_dir
+        self.label_to_idx = {lbl: i for i, lbl in enumerate(labels)}
+        self.num_labels = len(labels)
+        self.augment = augment
+        self.secondary_weight = secondary_weight
+
+    def __len__(self):
+        return len(self.manifest)
+
+    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        row = self.manifest.iloc[idx]
+        tensor_path = self.tensor_dir / row["tensor_file"]
+
+        try:
+            tensor = torch.load(tensor_path, weights_only=True).float()
+            if self.augment:
+                # Apply SpecAugment on the mel channels (all 3 are identical)
+                mel_np = tensor[0].numpy()
+                mel_np = spec_augment(mel_np)
+                tensor = torch.from_numpy(mel_np).unsqueeze(0).repeat(3, 1, 1)
+        except Exception as e:
+            logger.warning(f"Failed to load tensor {tensor_path}: {e}")
+            tensor = torch.zeros(3, 224, 224)
+
+        # Build multilabel target
+        target = torch.zeros(self.num_labels, dtype=torch.float32)
+        species = row.get("species", "")
+        if species in self.label_to_idx:
+            target[self.label_to_idx[species]] = 1.0
+
+        # Secondary labels
+        secondary = row.get("secondary_labels", "")
         if isinstance(secondary, str) and secondary.strip():
             try:
                 sec_labels = json.loads(secondary.replace("'", '"'))
@@ -422,6 +491,7 @@ def train(
     secondary_weight: float = 0.5,
     num_workers: int = 4,
     use_amp: bool = True,
+    precomputed: str | None = None,
 ):
     """
     Full training pipeline.
@@ -436,13 +506,16 @@ def train(
         fast: If True, use only 10% of data (for quick iteration)
         num_workers: DataLoader workers for parallel data loading
         use_amp: Enable automatic mixed precision (FP16/BF16)
+        precomputed: Path to precomputed tensor directory (from birdclef.precompute)
     """
     print("=" * 60)
     print("  BirdCLEF 2026 — Training Pipeline")
     print(f"  Backbone: {backbone} | Epochs: {epochs} | Loss: {loss_name}")
     print(f"  Secondary label weight: {secondary_weight}")
     print(f"  Workers: {num_workers} | AMP: {use_amp} | Batch: {batch_size}")
-    if smart_crop:
+    if precomputed:
+        print(f"  Precomputed: {precomputed}")
+    elif smart_crop:
         print(f"  Smart Crop: {smart_crop}")
     print("=" * 60)
 
@@ -484,8 +557,40 @@ def train(
     val_meta = meta.iloc[split_idx:]
     print(f"Train: {len(train_meta)} | Val: {len(val_meta)}")
 
-    # ── Dataset selection: smart-crop vs standard ──────────────────
-    if smart_crop:
+    # ── Dataset selection: precomputed > smart-crop > standard ─────
+    if precomputed:
+        pre_dir = Path(precomputed)
+        if not pre_dir.is_absolute():
+            pre_dir = OUTPUT_DIR / pre_dir
+        tensor_dir = pre_dir / "tensors"
+        pre_manifest_path = pre_dir / "manifest.csv"
+        if not pre_manifest_path.exists():
+            print(f"ERROR: Precomputed manifest not found: {pre_manifest_path}")
+            print("Run precompute first:  python -m birdclef.precompute")
+            return
+
+        pre_manifest = pd.read_csv(pre_manifest_path)
+        print(f"Precomputed manifest: {len(pre_manifest)} tensors from {tensor_dir}")
+
+        # Split by filename for train/val
+        pre_files = pre_manifest["filename"].unique()
+        pre_split_idx = int(len(pre_files) * TRAIN_SPLIT)
+        train_files = set(pre_files[:pre_split_idx])
+        val_files = set(pre_files[pre_split_idx:])
+
+        train_pre = pre_manifest[pre_manifest["filename"].isin(train_files)]
+        val_pre = pre_manifest[pre_manifest["filename"].isin(val_files)]
+
+        train_ds = PrecomputedDataset(
+            train_pre, tensor_dir, labels,
+            augment=True, secondary_weight=secondary_weight,
+        )
+        val_ds = PrecomputedDataset(
+            val_pre, tensor_dir, labels,
+            augment=False, secondary_weight=secondary_weight,
+        )
+        print(f"Precomputed split: Train {len(train_ds)} | Val {len(val_ds)}")
+    elif smart_crop:
         manifest_path = Path(smart_crop)
         if not manifest_path.is_absolute():
             manifest_path = OUTPUT_DIR / manifest_path
@@ -702,6 +807,8 @@ def main():
                         help="DataLoader workers for parallel data loading (default 4)")
     parser.add_argument("--no-amp", action="store_true",
                         help="Disable automatic mixed precision")
+    parser.add_argument("--precomputed", type=str, default=None,
+                        help="Path to precomputed tensor dir (from birdclef.precompute)")
 
     args = parser.parse_args()
     train(
@@ -719,6 +826,7 @@ def main():
         secondary_weight=args.secondary_weight,
         num_workers=args.num_workers,
         use_amp=not args.no_amp,
+        precomputed=args.precomputed,
     )
 
 
