@@ -114,6 +114,49 @@ def melspec_to_tensor(mel: np.ndarray) -> "torch.Tensor":
     return t
 
 
+def spec_augment(
+    mel: np.ndarray,
+    num_freq_masks: int = 1,
+    freq_mask_width: int = 15,
+    num_time_masks: int = 1,
+    time_mask_width: int = 25,
+) -> np.ndarray:
+    """
+    Apply SpecAugment (frequency + time masking) to a mel-spectrogram.
+
+    Conservative defaults tuned for ~33K weakly-labeled bird audio:
+      - 1 freq mask of up to 15 bins (12% of 128 mel bins)
+      - 1 time mask of up to 25 frames (8% of ~313 frames)
+
+    Args:
+        mel:             2-D array of shape (n_mels, time_frames).
+        num_freq_masks:  Number of frequency masks to apply.
+        freq_mask_width: Maximum width of each frequency mask (in mel bins).
+        num_time_masks:  Number of time masks to apply.
+        time_mask_width: Maximum width of each time mask (in frames).
+
+    Returns:
+        Augmented mel-spectrogram (same shape, in-place safe).
+    """
+    mel = mel.copy()
+    n_mels, n_frames = mel.shape
+    rng = np.random.default_rng()
+
+    # Frequency masking
+    for _ in range(num_freq_masks):
+        width = rng.integers(1, min(freq_mask_width, n_mels) + 1)
+        start = rng.integers(0, n_mels - width + 1)
+        mel[start:start + width, :] = 0.0
+
+    # Time masking
+    for _ in range(num_time_masks):
+        width = rng.integers(1, min(time_mask_width, n_frames) + 1)
+        start = rng.integers(0, n_frames - width + 1)
+        mel[:, start:start + width] = 0.0
+
+    return mel
+
+
 # ═══════════════════════════════════════════════════════════════════
 # Classical Feature Path (Secondary — for RF / XGBoost ensembles)
 # ═══════════════════════════════════════════════════════════════════

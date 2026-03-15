@@ -73,6 +73,34 @@ class TestFeatureExtraction:
         assert feats is not None
         assert not np.isnan(feats).any()
 
+    def test_spec_augment_preserves_shape(self):
+        """SpecAugment should not change mel-spectrogram shape."""
+        from birdclef.features import audio_to_melspec, spec_augment
+        y = self._make_sine_wave()
+        mel = audio_to_melspec(y)
+        augmented = spec_augment(mel)
+        assert augmented.shape == mel.shape
+
+    def test_spec_augment_introduces_zeros(self):
+        """SpecAugment should zero out some regions of a non-silent mel."""
+        from birdclef.features import audio_to_melspec, spec_augment
+        y = self._make_sine_wave()
+        mel = audio_to_melspec(y)
+        # Original normalized mel has nonzero content
+        assert mel.sum() > 0
+        augmented = spec_augment(mel, num_freq_masks=1, num_time_masks=1)
+        # Augmented should have more zeros than original
+        assert (augmented == 0.0).sum() > (mel == 0.0).sum()
+
+    def test_spec_augment_does_not_modify_input(self):
+        """SpecAugment should return a copy, not modify the input array."""
+        from birdclef.features import audio_to_melspec, spec_augment
+        y = self._make_sine_wave()
+        mel = audio_to_melspec(y)
+        original_sum = mel.sum()
+        _ = spec_augment(mel)
+        assert mel.sum() == original_sum
+
 
 # ════════════════════════════════════════════════════════════════════
 # Section 2: Model Architecture

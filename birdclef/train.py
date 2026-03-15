@@ -33,7 +33,7 @@ from birdclef.config import (
     SAMPLE_RATE, WINDOW_SECONDS,
     BATCH_SIZE, LEARNING_RATE, EPOCHS, TRAIN_SPLIT, MIXUP_ALPHA,
 )
-from birdclef.features import load_audio_window, audio_to_melspec, melspec_to_tensor
+from birdclef.features import load_audio_window, audio_to_melspec, melspec_to_tensor, spec_augment
 from birdclef.model import BACKBONE_BUILDERS
 
 logger = logging.getLogger("birdclef.train")
@@ -86,6 +86,8 @@ class BirdCLEFDataset(Dataset):
         try:
             y = load_audio_window(filepath, offset_seconds=offset, duration=self.max_duration)
             mel = audio_to_melspec(y)
+            if self.augment:
+                mel = spec_augment(mel)
             tensor = melspec_to_tensor(mel)
         except Exception as e:
             logger.warning(f"Failed to process {filepath}: {e}. Returning silence.")
@@ -129,12 +131,14 @@ class SmartCropDataset(Dataset):
         audio_dir: Path,
         labels: List[str],
         max_duration: float = WINDOW_SECONDS,
+        augment: bool = False,
     ):
         self.manifest = manifest.reset_index(drop=True)
         self.audio_dir = audio_dir
         self.label_to_idx = {lbl: i for i, lbl in enumerate(labels)}
         self.num_labels = len(labels)
         self.max_duration = max_duration
+        self.augment = augment
 
     def __len__(self):
         return len(self.manifest)
@@ -147,6 +151,8 @@ class SmartCropDataset(Dataset):
         try:
             y = load_audio_window(filepath, offset_seconds=offset, duration=self.max_duration)
             mel = audio_to_melspec(y)
+            if self.augment:
+                mel = spec_augment(mel)
             tensor = melspec_to_tensor(mel)
         except Exception as e:
             logger.warning(f"SmartCrop: failed to process {filepath}@{offset}s: {e}. Returning silence.")
@@ -458,8 +464,8 @@ def train(
         train_manifest = sc_manifest[sc_manifest["filename"].isin(train_files)]
         val_manifest = sc_manifest[sc_manifest["filename"].isin(val_files)]
 
-        train_ds = SmartCropDataset(train_manifest, TRAIN_AUDIO_DIR, labels)
-        val_ds = SmartCropDataset(val_manifest, TRAIN_AUDIO_DIR, labels)
+        train_ds = SmartCropDataset(train_manifest, TRAIN_AUDIO_DIR, labels, augment=True)
+        val_ds = SmartCropDataset(val_manifest, TRAIN_AUDIO_DIR, labels, augment=False)
         print(f"Smart crop split: Train {len(train_ds)} | Val {len(val_ds)} windows")
     else:
         train_ds = BirdCLEFDataset(train_meta, TRAIN_AUDIO_DIR, labels, augment=True)
