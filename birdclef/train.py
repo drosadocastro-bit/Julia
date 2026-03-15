@@ -492,6 +492,7 @@ def train(
     num_workers: int = 4,
     use_amp: bool = True,
     precomputed: str | None = None,
+    patience: int = 0,
 ):
     """
     Full training pipeline.
@@ -693,8 +694,11 @@ def train(
     scaler = torch.amp.GradScaler(enabled=amp_enabled and amp_dtype == torch.float16)
     if amp_enabled:
         print(f"AMP: enabled ({amp_dtype})")
+    if patience > 0:
+        print(f"Early stopping: patience={patience}")
 
     best_val_loss = float("inf")
+    epochs_without_improvement = 0
 
     # ── Training ───────────────────────────────────────────────────
     for epoch in range(1, epochs + 1):
@@ -751,6 +755,7 @@ def train(
         # Save best model
         if avg_val < best_val_loss:
             best_val_loss = avg_val
+            epochs_without_improvement = 0
             torch.save(model.state_dict(), MODEL_DIR / MODEL_FILENAME)
             with open(MODEL_DIR / LABELS_FILENAME, "w", encoding="utf-8") as f:
                 json.dump(labels, f)
@@ -771,6 +776,11 @@ def train(
                 json.dump(metadata, f, indent=2)
             print(f"  -> Saved best model (val_loss={avg_val:.4f})")
             print(f"  -> Saved training metadata ({TRAINING_METADATA_FILENAME})")
+        else:
+            epochs_without_improvement += 1
+            if patience > 0 and epochs_without_improvement >= patience:
+                print(f"  Early stopping: no improvement for {patience} epochs")
+                break
 
     print("=" * 60)
     print(f"Training complete. Best val loss: {best_val_loss:.4f}")
@@ -809,6 +819,8 @@ def main():
                         help="Disable automatic mixed precision")
     parser.add_argument("--precomputed", type=str, default=None,
                         help="Path to precomputed tensor dir (from birdclef.precompute)")
+    parser.add_argument("--patience", type=int, default=0,
+                        help="Early stopping patience (0 = disabled, default 0)")
 
     args = parser.parse_args()
     train(
@@ -827,6 +839,7 @@ def main():
         num_workers=args.num_workers,
         use_amp=not args.no_amp,
         precomputed=args.precomputed,
+        patience=args.patience,
     )
 
 

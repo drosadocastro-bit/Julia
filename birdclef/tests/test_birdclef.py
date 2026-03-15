@@ -868,3 +868,77 @@ class TestPrecomputeScript:
 
         assert mtime1 == mtime2, "File should not be re-written on resume"
         assert len(r2) == 1
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Early Stopping
+# ═══════════════════════════════════════════════════════════════════
+
+class TestEarlyStopping:
+    """Validate early stopping logic in the training loop."""
+
+    def test_patience_zero_disables_early_stopping(self):
+        """patience=0 should never trigger early stop (default behavior)."""
+        # Simulate: val loss degrades 10 epochs in a row — no break
+        patience = 0
+        best = float("inf")
+        epochs_without = 0
+        stopped = False
+
+        for epoch in range(1, 11):
+            val_loss = 0.1 + epoch * 0.01  # worsening
+            if val_loss < best:
+                best = val_loss
+                epochs_without = 0
+            else:
+                epochs_without += 1
+                if patience > 0 and epochs_without >= patience:
+                    stopped = True
+                    break
+
+        assert not stopped, "patience=0 should never early-stop"
+
+    def test_patience_triggers_after_n_epochs(self):
+        """patience=3 should stop after 3 consecutive non-improving epochs."""
+        patience = 3
+        best = float("inf")
+        epochs_without = 0
+        stopped_at = None
+
+        val_losses = [0.05, 0.04, 0.03, 0.035, 0.04, 0.05, 0.06]
+        #             imp    imp    imp   worse  worse  worse  -> stops here (epoch 7 never runs)
+
+        for epoch, val_loss in enumerate(val_losses, 1):
+            if val_loss < best:
+                best = val_loss
+                epochs_without = 0
+            else:
+                epochs_without += 1
+                if patience > 0 and epochs_without >= patience:
+                    stopped_at = epoch
+                    break
+
+        assert stopped_at == 6, f"Should stop at epoch 6, got {stopped_at}"
+
+    def test_improvement_resets_counter(self):
+        """A single improvement should reset the patience counter."""
+        patience = 2
+        best = float("inf")
+        epochs_without = 0
+        stopped = False
+
+        val_losses = [0.05, 0.04, 0.045, 0.039, 0.04, 0.041, 0.05]
+        #             imp    imp   +1     imp(reset) +1    +2 -> stop
+
+        for epoch, val_loss in enumerate(val_losses, 1):
+            if val_loss < best:
+                best = val_loss
+                epochs_without = 0
+            else:
+                epochs_without += 1
+                if patience > 0 and epochs_without >= patience:
+                    stopped = True
+                    break
+
+        assert stopped, "Should have stopped"
+        assert epochs_without == patience
