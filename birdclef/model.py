@@ -209,9 +209,10 @@ class BirdClassifier:
 
         self.model = builder(num_species)
 
-        self.model.load_state_dict(
-            torch.load(model_path, map_location=self.device, weights_only=True)
-        )
+        state_dict = torch.load(model_path, map_location=self.device, weights_only=True)
+        # Handle torch.compile _orig_mod prefix
+        cleaned = {k.replace('_orig_mod.', ''): v for k, v in state_dict.items()}
+        self.model.load_state_dict(cleaned)
         self.model.to(self.device)
         self.model.eval()
         self.is_loaded = True

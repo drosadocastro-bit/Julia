@@ -1,14 +1,14 @@
 """
 BirdCLEF+ 2026 — Kaggle Submission Notebook
 ============================================
-Julia Bioacoustics × Project Aria
+Team Cibuco_Boriken | EfficientNet-B2 | Smart Crop + CFAR
 
 This script is the Kaggle kernel entry point.
 Copy/paste into a Kaggle notebook cell, or upload as a .py script.
 
 Requirements:
   - Attach competition dataset: birdclef-2026
-  - Attach trained model dataset (your uploaded model checkpoint)
+  - Attach trained model dataset (your uploaded B2 checkpoint)
   - CPU kernel, internet OFF
 
 Expected runtime: < 60 minutes on Kaggle CPU
@@ -43,7 +43,7 @@ from birdclef.inference import run_inference
 model_dir = Path(MODEL_DATASET) if os.path.exists(MODEL_DATASET) else MODEL_DIR
 
 submission = run_inference(
-    backbone="efficientnet_b0",  # must match training backbone
+    backbone="efficientnet_b2",  # must match training backbone
     model_dir=model_dir,
     batch_size=16,               # tune down if OOM on CPU
 )

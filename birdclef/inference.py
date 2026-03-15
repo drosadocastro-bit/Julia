@@ -145,14 +145,17 @@ def run_inference(
         extra_cols = actual_cols - expected_cols
 
         if missing_cols:
-            print(f"WARNING: Missing columns in submission: {missing_cols}")
+            # Zero-shot species: use 1/N prior instead of 0.0
+            zero_shot_prior = 1.0 / len(expected_cols - {"row_id"})
+            print(f"WARNING: {len(missing_cols)} missing species (zero-shot), using prior={zero_shot_prior:.6f}")
             for col in missing_cols:
-                submission[col] = 0.0
+                submission[col] = zero_shot_prior
         if extra_cols:
             print(f"NOTE: Extra columns (will be ignored): {extra_cols}")
 
         # Reorder columns to match sample submission
-        submission = submission.reindex(columns=sample_sub.columns, fill_value=0.0)
+        zero_shot_fill = 1.0 / max(len(expected_cols) - 1, 1)
+        submission = submission.reindex(columns=sample_sub.columns, fill_value=zero_shot_fill)
 
     total_time = time.time() - t_start
     print(f"\nInference complete: {len(submission)} rows in {total_time:.1f}s")
