@@ -57,6 +57,7 @@ class BirdCLEFDataset(Dataset):
         labels: List[str],
         max_duration: float = WINDOW_SECONDS,
         augment: bool = False,
+        secondary_weight: float = 0.5,
     ):
         self.metadata = metadata.reset_index(drop=True)
         self.audio_dir = audio_dir
@@ -64,6 +65,7 @@ class BirdCLEFDataset(Dataset):
         self.num_labels = len(labels)
         self.max_duration = max_duration
         self.augment = augment
+        self.secondary_weight = secondary_weight
 
     def __len__(self):
         return len(self.metadata)
@@ -99,14 +101,14 @@ class BirdCLEFDataset(Dataset):
         if species in self.label_to_idx:
             target[self.label_to_idx[species]] = 1.0
 
-        # Secondary labels (if provided)
+        # Secondary labels (if provided) — weighted below primary
         secondary = row.get("secondary_labels", "")
         if isinstance(secondary, str) and secondary.strip():
             try:
                 sec_labels = json.loads(secondary.replace("'", '"'))
                 for s in sec_labels:
                     if s in self.label_to_idx:
-                        target[self.label_to_idx[s]] = 1.0
+                        target[self.label_to_idx[s]] = self.secondary_weight
             except (json.JSONDecodeError, TypeError):
                 pass
 
@@ -132,6 +134,8 @@ class SmartCropDataset(Dataset):
         labels: List[str],
         max_duration: float = WINDOW_SECONDS,
         augment: bool = False,
+        secondary_weight: float = 0.5,
+        train_meta: pd.DataFrame | None = None,
     ):
         self.manifest = manifest.reset_index(drop=True)
         self.audio_dir = audio_dir
@@ -139,6 +143,12 @@ class SmartCropDataset(Dataset):
         self.num_labels = len(labels)
         self.max_duration = max_duration
         self.augment = augment
+        self.secondary_weight = secondary_weight
+        # Build filename → secondary_labels lookup from original metadata
+        self._sec_lookup: dict[str, str] = {}
+        if train_meta is not None and "secondary_labels" in train_meta.columns:
+            for _, r in train_meta[["filename", "secondary_labels"]].drop_duplicates("filename").iterrows():
+                self._sec_lookup[r["filename"]] = str(r["secondary_labels"])
 
     def __len__(self):
         return len(self.manifest)
@@ -163,6 +173,17 @@ class SmartCropDataset(Dataset):
         species = row.get("species", "")
         if species in self.label_to_idx:
             target[self.label_to_idx[species]] = 1.0
+
+        # Secondary labels from original metadata
+        secondary = self._sec_lookup.get(row.get("filename", ""), "")
+        if isinstance(secondary, str) and secondary.strip():
+            try:
+                sec_labels = json.loads(secondary.replace("'", '"'))
+                for s in sec_labels:
+                    if s in self.label_to_idx:
+                        target[self.label_to_idx[s]] = self.secondary_weight
+            except (json.JSONDecodeError, TypeError):
+                pass
 
         return tensor, target
 
@@ -323,6 +344,7 @@ def build_training_metadata(
     include_soundscapes: bool,
     use_weighted_bce: bool,
     smart_crop: bool = False,
+    secondary_weight: float = 0.5,
     best_val_loss: float = float("inf"),
 ) -> dict:
     """Build a small JSON-serializable summary for the saved checkpoint."""
@@ -336,6 +358,7 @@ def build_training_metadata(
         "include_soundscapes": include_soundscapes,
         "weighted_bce": use_weighted_bce if loss_name == "bce" else False,
         "smart_crop": smart_crop,
+        "secondary_weight": secondary_weight,
         "best_val_loss": best_val_loss,
     }
     if loss_name == "focal":
@@ -384,6 +407,7 @@ def train(
     include_soundscapes: bool = False,
     use_weighted_bce: bool = True,
     smart_crop: str | None = None,
+    secondary_weight: float = 0.5,
 ):
     """
     Full training pipeline.
@@ -400,6 +424,7 @@ def train(
     print("=" * 60)
     print("  BirdCLEF 2026 — Training Pipeline")
     print(f"  Backbone: {backbone} | Epochs: {epochs} | Loss: {loss_name}")
+    print(f"  Secondary label weight: {secondary_weight}")
     if smart_crop:
         print(f"  Smart Crop: {smart_crop}")
     print("=" * 60)
@@ -464,12 +489,24 @@ def train(
         train_manifest = sc_manifest[sc_manifest["filename"].isin(train_files)]
         val_manifest = sc_manifest[sc_manifest["filename"].isin(val_files)]
 
-        train_ds = SmartCropDataset(train_manifest, TRAIN_AUDIO_DIR, labels, augment=True)
-        val_ds = SmartCropDataset(val_manifest, TRAIN_AUDIO_DIR, labels, augment=False)
+        train_ds = SmartCropDataset(
+            train_manifest, TRAIN_AUDIO_DIR, labels,
+            augment=True, secondary_weight=secondary_weight, train_meta=meta,
+        )
+        val_ds = SmartCropDataset(
+            val_manifest, TRAIN_AUDIO_DIR, labels,
+            augment=False, secondary_weight=secondary_weight, train_meta=meta,
+        )
         print(f"Smart crop split: Train {len(train_ds)} | Val {len(val_ds)} windows")
     else:
-        train_ds = BirdCLEFDataset(train_meta, TRAIN_AUDIO_DIR, labels, augment=True)
-        val_ds = BirdCLEFDataset(val_meta, TRAIN_AUDIO_DIR, labels, augment=False)
+        train_ds = BirdCLEFDataset(
+            train_meta, TRAIN_AUDIO_DIR, labels,
+            augment=True, secondary_weight=secondary_weight,
+        )
+        val_ds = BirdCLEFDataset(
+            val_meta, TRAIN_AUDIO_DIR, labels,
+            augment=False, secondary_weight=secondary_weight,
+        )
 
     # ── Optionally merge soundscape windows into training set ──────
     if include_soundscapes:
@@ -567,6 +604,7 @@ def train(
                 include_soundscapes=include_soundscapes,
                 use_weighted_bce=use_weighted_bce,
                 smart_crop=smart_crop is not None,
+                secondary_weight=secondary_weight,
                 best_val_loss=avg_val,
             )
             with open(MODEL_DIR / TRAINING_METADATA_FILENAME, "w", encoding="utf-8") as f:
@@ -603,6 +641,8 @@ def main():
                         help="Disable class-weighted BCE loss")
     parser.add_argument("--smart-crop", type=str, default=None,
                         help="Path to smart_crop_manifest.csv (CFAR-filtered windows)")
+    parser.add_argument("--secondary-weight", type=float, default=0.5,
+                        help="Weight for secondary species labels (0 to disable, default 0.5)")
 
     args = parser.parse_args()
     train(
@@ -617,6 +657,7 @@ def main():
         include_soundscapes=args.include_soundscapes,
         use_weighted_bce=not args.no_weighted_bce,
         smart_crop=args.smart_crop,
+        secondary_weight=args.secondary_weight,
     )
 
 

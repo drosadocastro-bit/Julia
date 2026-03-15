@@ -9,6 +9,7 @@ import tempfile
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
 import torch
 
@@ -486,3 +487,124 @@ class TestSmartCropDataset:
         energy_burst = mel_burst.mean()
         assert energy_burst > energy_quiet, \
             f"Burst window energy ({energy_burst:.6f}) should exceed quiet ({energy_quiet:.6f})"
+
+
+# ═══════════════════════════════════════════════════════════════════
+# Secondary Labels
+# ═══════════════════════════════════════════════════════════════════
+
+class TestSecondaryLabels:
+    """Validate secondary label weighting in BirdCLEFDataset and SmartCropDataset."""
+
+    def _make_audio(self, tmp_path, species_list):
+        """Create dummy audio files for each species."""
+        audio_dir = tmp_path / "train_audio"
+        audio_dir.mkdir()
+        sr = 32000
+        for sp in species_list:
+            sp_dir = audio_dir / sp
+            sp_dir.mkdir()
+            y = np.random.default_rng(42).standard_normal(sr * 5).astype(np.float32) * 0.01
+            _write_test_wav(sp_dir / "call.wav", y)
+        return audio_dir
+
+    def test_birdclef_secondary_weight_05(self, tmp_path):
+        """Secondary species should appear in target at 0.5, primary at 1.0."""
+        from birdclef.train import BirdCLEFDataset
+
+        labels = ["sp_a", "sp_b", "sp_c"]
+        audio_dir = self._make_audio(tmp_path, labels)
+        meta = pd.DataFrame([{
+            "filename": "sp_a/call.wav",
+            "primary_label": "sp_a",
+            "secondary_labels": "['sp_b', 'sp_c']",
+        }])
+        ds = BirdCLEFDataset(meta, audio_dir, labels, secondary_weight=0.5)
+        _, target = ds[0]
+
+        assert target[0] == 1.0, "Primary label should be 1.0"
+        assert target[1] == 0.5, "Secondary label sp_b should be 0.5"
+        assert target[2] == 0.5, "Secondary label sp_c should be 0.5"
+
+    def test_birdclef_secondary_weight_zero_disables(self, tmp_path):
+        """Setting secondary_weight=0 should leave secondary slots at 0."""
+        from birdclef.train import BirdCLEFDataset
+
+        labels = ["sp_a", "sp_b"]
+        audio_dir = self._make_audio(tmp_path, labels)
+        meta = pd.DataFrame([{
+            "filename": "sp_a/call.wav",
+            "primary_label": "sp_a",
+            "secondary_labels": "['sp_b']",
+        }])
+        ds = BirdCLEFDataset(meta, audio_dir, labels, secondary_weight=0.0)
+        _, target = ds[0]
+
+        assert target[0] == 1.0
+        assert target[1] == 0.0, "Secondary should be 0 when weight is 0"
+
+    def test_birdclef_empty_secondary_no_effect(self, tmp_path):
+        """Empty secondary_labels ('[]') should only activate primary."""
+        from birdclef.train import BirdCLEFDataset
+
+        labels = ["sp_a", "sp_b"]
+        audio_dir = self._make_audio(tmp_path, labels)
+        meta = pd.DataFrame([{
+            "filename": "sp_a/call.wav",
+            "primary_label": "sp_a",
+            "secondary_labels": "[]",
+        }])
+        ds = BirdCLEFDataset(meta, audio_dir, labels)
+        _, target = ds[0]
+
+        assert target[0] == 1.0
+        assert target[1] == 0.0
+
+    def test_smartcrop_secondary_from_train_meta(self, tmp_path):
+        """SmartCropDataset should pick up secondary labels from train_meta."""
+        from birdclef.train import SmartCropDataset
+
+        labels = ["sp_a", "sp_b", "sp_c"]
+        audio_dir = self._make_audio(tmp_path, labels)
+
+        train_meta = pd.DataFrame([{
+            "filename": "sp_a/call.wav",
+            "primary_label": "sp_a",
+            "secondary_labels": "['sp_b']",
+        }])
+        manifest = pd.DataFrame([{
+            "filename": "sp_a/call.wav",
+            "species": "sp_a",
+            "window_index": 0,
+            "offset_seconds": 0.0,
+            "confidence": 0.9,
+        }])
+        ds = SmartCropDataset(
+            manifest, audio_dir, labels,
+            secondary_weight=0.5, train_meta=train_meta,
+        )
+        _, target = ds[0]
+
+        assert target[0] == 1.0, "Primary sp_a should be 1.0"
+        assert target[1] == 0.5, "Secondary sp_b should be 0.5"
+        assert target[2] == 0.0, "sp_c not mentioned, should be 0.0"
+
+    def test_smartcrop_no_train_meta_no_secondary(self, tmp_path):
+        """Without train_meta, SmartCropDataset should only set primary."""
+        from birdclef.train import SmartCropDataset
+
+        labels = ["sp_a", "sp_b"]
+        audio_dir = self._make_audio(tmp_path, labels)
+
+        manifest = pd.DataFrame([{
+            "filename": "sp_a/call.wav",
+            "species": "sp_a",
+            "window_index": 0,
+            "offset_seconds": 0.0,
+            "confidence": 0.9,
+        }])
+        ds = SmartCropDataset(manifest, audio_dir, labels)
+        _, target = ds[0]
+
+        assert target[0] == 1.0
+        assert target[1] == 0.0
