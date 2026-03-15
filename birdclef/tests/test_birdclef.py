@@ -608,3 +608,70 @@ class TestSecondaryLabels:
 
         assert target[0] == 1.0
         assert target[1] == 0.0
+
+
+# ═══════════════════════════════════════════════════════════════════
+# GPU / Performance Optimizations
+# ═══════════════════════════════════════════════════════════════════
+
+class TestGPUOptimizations:
+    """Validate performance optimizations don't break functionality."""
+
+    def _make_audio(self, tmp_path, species_list):
+        audio_dir = tmp_path / "train_audio"
+        audio_dir.mkdir()
+        sr = 32000
+        for sp in species_list:
+            sp_dir = audio_dir / sp
+            sp_dir.mkdir()
+            y = np.random.default_rng(42).standard_normal(sr * 10).astype(np.float32) * 0.01
+            _write_test_wav(sp_dir / "call.wav", y)
+        return audio_dir
+
+    def test_duration_cache_avoids_repeated_io(self, tmp_path):
+        """BirdCLEFDataset should cache file durations after first access."""
+        from birdclef.train import BirdCLEFDataset
+
+        labels = ["sp_a"]
+        audio_dir = self._make_audio(tmp_path, labels)
+        meta = pd.DataFrame([
+            {"filename": "sp_a/call.wav", "primary_label": "sp_a", "secondary_labels": "[]"},
+            {"filename": "sp_a/call.wav", "primary_label": "sp_a", "secondary_labels": "[]"},
+        ])
+        ds = BirdCLEFDataset(meta, audio_dir, labels, augment=True)
+
+        # Access twice — cache should be populated after first
+        _ = ds[0]
+        assert len(ds._duration_cache) == 1, "Duration should be cached"
+        _ = ds[1]
+        assert len(ds._duration_cache) == 1, "Same file should reuse cache"
+
+    def test_duration_cache_returns_valid_float(self, tmp_path):
+        """Cached duration should be a positive float matching actual file length."""
+        from birdclef.train import BirdCLEFDataset
+
+        labels = ["sp_a"]
+        audio_dir = self._make_audio(tmp_path, labels)
+        meta = pd.DataFrame([
+            {"filename": "sp_a/call.wav", "primary_label": "sp_a", "secondary_labels": "[]"},
+        ])
+        ds = BirdCLEFDataset(meta, audio_dir, labels, augment=True)
+        _ = ds[0]
+
+        cached = list(ds._duration_cache.values())[0]
+        assert isinstance(cached, float)
+        assert cached > 9.0, f"10s file should report ~10s, got {cached}"
+
+    def test_amp_autocast_cpu_noop(self):
+        """AMP autocast on CPU should be a safe no-op."""
+        model = torch.nn.Linear(10, 5)
+        x = torch.randn(2, 10)
+
+        with torch.amp.autocast(device_type="cpu", dtype=torch.float16, enabled=False):
+            out = model(x)
+        assert out.shape == (2, 5)
+
+    def test_grad_scaler_disabled_on_cpu(self):
+        """GradScaler with enabled=False should pass through normally."""
+        scaler = torch.amp.GradScaler(enabled=False)
+        assert not scaler.is_enabled()

@@ -9,6 +9,9 @@ Usage (local):
     python -m birdclef.train --backbone small --epochs 10 --fast
     python -m birdclef.train --backbone small --loss focal --epochs 10 --fast
     python -m birdclef.train --smart-crop output/smart_crop_manifest.csv --epochs 30
+
+Usage (Colab H100):
+    python -m birdclef.train --backbone efficientnet_b2 --epochs 30 --batch-size 128 --num-workers 4
 """
 
 import argparse
@@ -66,9 +69,22 @@ class BirdCLEFDataset(Dataset):
         self.max_duration = max_duration
         self.augment = augment
         self.secondary_weight = secondary_weight
+        self._duration_cache: dict[str, float] = {}
 
     def __len__(self):
         return len(self.metadata)
+
+    def _get_duration(self, filepath: Path) -> float:
+        """Get file duration with caching to avoid repeated I/O."""
+        key = str(filepath)
+        if key not in self._duration_cache:
+            try:
+                import soundfile as sf
+                info = sf.info(filepath)
+                self._duration_cache[key] = info.duration
+            except Exception:
+                self._duration_cache[key] = self.max_duration
+        return self._duration_cache[key]
 
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
         row = self.metadata.iloc[idx]
@@ -77,13 +93,9 @@ class BirdCLEFDataset(Dataset):
         # Random offset for augmentation during training
         offset = 0.0
         if self.augment:
-            try:
-                import librosa
-                file_duration = librosa.get_duration(path=filepath)
-                max_offset = max(0, file_duration - self.max_duration)
-                offset = random.uniform(0, max_offset) if max_offset > 0 else 0.0
-            except Exception:
-                offset = 0.0
+            file_duration = self._get_duration(filepath)
+            max_offset = max(0, file_duration - self.max_duration)
+            offset = random.uniform(0, max_offset) if max_offset > 0 else 0.0
 
         try:
             y = load_audio_window(filepath, offset_seconds=offset, duration=self.max_duration)
@@ -408,6 +420,8 @@ def train(
     use_weighted_bce: bool = True,
     smart_crop: str | None = None,
     secondary_weight: float = 0.5,
+    num_workers: int = 4,
+    use_amp: bool = True,
 ):
     """
     Full training pipeline.
@@ -420,11 +434,14 @@ def train(
         loss_name: Loss function to use ("bce" or "focal")
         use_mixup: Whether to apply mixup augmentation
         fast: If True, use only 10% of data (for quick iteration)
+        num_workers: DataLoader workers for parallel data loading
+        use_amp: Enable automatic mixed precision (FP16/BF16)
     """
     print("=" * 60)
     print("  BirdCLEF 2026 — Training Pipeline")
     print(f"  Backbone: {backbone} | Epochs: {epochs} | Loss: {loss_name}")
     print(f"  Secondary label weight: {secondary_weight}")
+    print(f"  Workers: {num_workers} | AMP: {use_amp} | Batch: {batch_size}")
     if smart_crop:
         print(f"  Smart Crop: {smart_crop}")
     print("=" * 60)
@@ -516,8 +533,19 @@ def train(
             train_ds = torch.utils.data.ConcatDataset([train_ds, sc_ds])
             print(f"  + Added {sc_count} soundscape windows → {len(train_ds)} total train samples")
 
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=0)
-    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=0)
+    use_cuda = torch.cuda.is_available()
+    loader_kwargs = {
+        "num_workers": num_workers if use_cuda else 0,
+        "pin_memory": use_cuda,
+        "prefetch_factor": 2 if (use_cuda and num_workers > 0) else None,
+        "persistent_workers": num_workers > 0 and use_cuda,
+    }
+    train_loader = DataLoader(
+        train_ds, batch_size=batch_size, shuffle=True, **loader_kwargs,
+    )
+    val_loader = DataLoader(
+        val_ds, batch_size=batch_size, shuffle=False, **loader_kwargs,
+    )
 
     # ── Build model ────────────────────────────────────────────────
     builder = BACKBONE_BUILDERS.get(backbone)
@@ -526,8 +554,17 @@ def train(
         return
 
     model = builder(num_species)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = "cuda" if use_cuda else "cpu"
     model = model.to(device)
+
+    # torch.compile for PyTorch 2.x graph optimization
+    if hasattr(torch, "compile") and device == "cuda":
+        try:
+            model = torch.compile(model)
+            print("torch.compile: enabled")
+        except Exception as e:
+            print(f"torch.compile: skipped ({e})")
+
     print(f"Device: {device}")
 
     # ── Loss + Optimizer ───────────────────────────────────────────
@@ -544,6 +581,14 @@ def train(
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
 
+    # ── Automatic Mixed Precision ──────────────────────────────────
+    amp_enabled = use_amp and device == "cuda"
+    # Prefer bf16 on Ampere+ (H100/A100), fall back to fp16
+    amp_dtype = torch.bfloat16 if (amp_enabled and torch.cuda.is_bf16_supported()) else torch.float16
+    scaler = torch.amp.GradScaler(enabled=amp_enabled and amp_dtype == torch.float16)
+    if amp_enabled:
+        print(f"AMP: enabled ({amp_dtype})")
+
     best_val_loss = float("inf")
 
     # ── Training ───────────────────────────────────────────────────
@@ -553,16 +598,24 @@ def train(
         t0 = time.time()
 
         for batch_x, batch_y in train_loader:
-            batch_x, batch_y = batch_x.to(device), batch_y.to(device)
+            batch_x = batch_x.to(device, non_blocking=True)
+            batch_y = batch_y.to(device, non_blocking=True)
 
             if use_mixup:
                 batch_x, batch_y = mixup_batch(batch_x, batch_y)
 
-            optimizer.zero_grad()
-            logits = model(batch_x)
-            loss = criterion(logits, batch_y)
-            loss.backward()
-            optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
+            with torch.amp.autocast(device_type=device, dtype=amp_dtype, enabled=amp_enabled):
+                logits = model(batch_x)
+                loss = criterion(logits, batch_y)
+
+            if scaler.is_enabled():
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                optimizer.step()
             train_loss += loss.item()
 
         scheduler.step()
@@ -573,9 +626,11 @@ def train(
         val_loss = 0.0
         with torch.no_grad():
             for batch_x, batch_y in val_loader:
-                batch_x, batch_y = batch_x.to(device), batch_y.to(device)
-                logits = model(batch_x)
-                loss = criterion(logits, batch_y)
+                batch_x = batch_x.to(device, non_blocking=True)
+                batch_y = batch_y.to(device, non_blocking=True)
+                with torch.amp.autocast(device_type=device, dtype=amp_dtype, enabled=amp_enabled):
+                    logits = model(batch_x)
+                    loss = criterion(logits, batch_y)
                 val_loss += loss.item()
 
         avg_val = val_loss / max(len(val_loader), 1)
@@ -643,6 +698,10 @@ def main():
                         help="Path to smart_crop_manifest.csv (CFAR-filtered windows)")
     parser.add_argument("--secondary-weight", type=float, default=0.5,
                         help="Weight for secondary species labels (0 to disable, default 0.5)")
+    parser.add_argument("--num-workers", type=int, default=4,
+                        help="DataLoader workers for parallel data loading (default 4)")
+    parser.add_argument("--no-amp", action="store_true",
+                        help="Disable automatic mixed precision")
 
     args = parser.parse_args()
     train(
@@ -658,6 +717,8 @@ def main():
         use_weighted_bce=not args.no_weighted_bce,
         smart_crop=args.smart_crop,
         secondary_weight=args.secondary_weight,
+        num_workers=args.num_workers,
+        use_amp=not args.no_amp,
     )
 
 
