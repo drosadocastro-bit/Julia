@@ -97,9 +97,25 @@ def extract_embedding(model, audio_np: np.ndarray) -> np.ndarray:
     # Perch expects (batch, samples) float32
     waveform = tf.constant(audio_np[np.newaxis, :], dtype=tf.float32)
 
-    # Run model — returns dict with 'embedding' and 'logits'
-    output = model.infer_tf(waveform)
-    embedding = output["embedding"].numpy().squeeze()  # (1280,)
+    # Run model — output format varies by TF Hub version
+    # Try the callable signatures Perch exposes
+    if hasattr(model, 'infer_tf'):
+        output = model.infer_tf(waveform)
+    elif hasattr(model, 'front_end'):
+        output = model.front_end(waveform)
+    else:
+        output = model(waveform)
+
+    # Handle dict output (newer versions) or tuple output (older versions)
+    if isinstance(output, dict):
+        embedding = output["embedding"].numpy().squeeze()
+    elif isinstance(output, (tuple, list)):
+        # Perch typically returns (logits, embedding) — embedding is the larger one
+        arrays = [o.numpy().squeeze() for o in output]
+        embedding = max(arrays, key=lambda a: a.size)
+    else:
+        embedding = output.numpy().squeeze()
+
     return embedding
 
 
