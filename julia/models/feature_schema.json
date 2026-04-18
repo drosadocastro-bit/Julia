@@ -1,0 +1,21 @@
+{
+  "features": [
+    "hurricane_season_flag",
+    "dry_season_flag",
+    "day_length_minutes",
+    "rainfall_last_7_days",
+    "rainfall_last_30_days",
+    "rainfall_anomaly_percent",
+    "TMAX",
+    "heat_stress_flag",
+    "drought_index",
+    "drought_severity_flag",
+    "enso_phase_encoded",
+    "enso_strength",
+    "min_distance_to_PR_last_7d",
+    "storm_vmax",
+    "storm_count_last_30_days"
+  ],
+  "weekly_model_path": "julia/models/weekly_model.pkl",
+  "monthly_model_path": "julia/models/monthly_model.pkl"
+}

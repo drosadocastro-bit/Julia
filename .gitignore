@@ -24,3 +24,33 @@ __pycache__/
 # Archives/temp
 *.zip
 birdclef_sanity_*/
+
+# Julia specific excludes
+*.db
+*.jsonl
+tokenizer.json
+vocab.json
+merges.txt
+special_tokens_map.json
+added_tokens.json
+tokenizer_config.json
+chat_template.jinja
+
+# Logs and debug output
+*.log
+server_log*
+err*.txt
+*_out.txt
+*_output.txt
+pytest_*.txt
+history_output.txt
+debug_out.txt
+server_error_*.txt
+temp_out.log
+
+# Large data folders (potential)
+Agriculture-Soil-QA-Pairs-Dataset/
+agriculture-qa-english-only/
+sawotiQ29_crop_optimization/
+birdclef/
+data/

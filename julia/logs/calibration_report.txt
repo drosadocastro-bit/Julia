@@ -1,0 +1,36 @@
+﻿python : Traceback (most recent call last):
+At line:1 char:1
++ python scripts/calibrate_risk_engine.py 2>&1 | 
+Out-File -Encoding utf ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: 
+(Trace    back (most recent call last)::String) 
+[], Remo    teException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+  File "D:\Julia_croptaker\scripts\calibrate_risk_
+engine.py", line 558, in <module>
+    run()
+    ~~~^^
+  File "D:\Julia_croptaker\scripts\calibrate_risk_
+engine.py", line 519, in run
+    print("\u2554\u2550\u2550\u2550\u2550\u2550\u2
+550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255
+0\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\
+u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2
+550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255
+0\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\
+u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2
+550\u2557")
+    ~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\draku\AppData\Local\Programs\Pyth
+on\Python313\Lib\encodings\cp1252.py", line 19, 
+in encode
+    return codecs.charmap_encode(input,self.errors
+,encoding_table)[0]
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec can't encode 
+characters in position 0-57: character maps to 
+<undefined>

@@ -1,0 +1,16 @@
+{
+    "name": "Julia AI Crop Caretaker",
+    "short_name": "Julia AI",
+    "description": "Smart simulation and monitoring for Puerto Rican crops.",
+    "start_url": "/",
+    "display": "standalone",
+    "background_color": "#0d1117",
+    "theme_color": "#10b981",
+    "icons": [
+        {
+            "src": "/static/julia_icon.png",
+            "sizes": "512x512",
+            "type": "image/png"
+        }
+    ]
+}

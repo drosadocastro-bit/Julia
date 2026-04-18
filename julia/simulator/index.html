@@ -1,0 +1,1524 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="theme-color" content="#10b981">
+    <link rel="manifest" href="/manifest.json">
+    <link rel="apple-touch-icon" href="/static/julia_icon.png">
+    <title>Julia — AI Crop Caretaker Simulator</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap"
+        rel="stylesheet">
+    <style>
+        *,
+        *::before,
+        *::after {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        :root {
+            --bg-primary: #0a0e17;
+            --bg-secondary: #111827;
+            --bg-card: rgba(17, 24, 39, 0.7);
+            --bg-glass: rgba(255, 255, 255, 0.03);
+            --border-glass: rgba(255, 255, 255, 0.08);
+            --text-primary: #f0f4f8;
+            --text-secondary: #94a3b8;
+            --text-muted: #64748b;
+            --accent-green: #22c55e;
+            --accent-green-glow: rgba(34, 197, 94, 0.25);
+            --accent-blue: #3b82f6;
+            --accent-blue-glow: rgba(59, 130, 246, 0.2);
+            --accent-yellow: #eab308;
+            --accent-red: #ef4444;
+            --accent-red-glow: rgba(239, 68, 68, 0.2);
+            --accent-purple: #a855f7;
+            --accent-cyan: #06b6d4;
+            --gradient-green: linear-gradient(135deg, #22c55e, #16a34a);
+            --gradient-blue: linear-gradient(135deg, #3b82f6, #2563eb);
+            --gradient-warm: linear-gradient(135deg, #f97316, #ef4444);
+            --gradient-purple: linear-gradient(135deg, #a855f7, #7c3aed);
+            --radius: 16px;
+            --radius-sm: 10px;
+            --shadow-lg: 0 20px 60px rgba(0, 0, 0, 0.4);
+        }
+
+        body {
+            font-family: 'Inter', -apple-system, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        /* Background Effects */
+        body::before {
+            content: '';
+            position: fixed;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: radial-gradient(ellipse at 20% 50%, rgba(34, 197, 94, 0.05) 0%, transparent 50%),
+                radial-gradient(ellipse at 80% 20%, rgba(59, 130, 246, 0.05) 0%, transparent 50%),
+                radial-gradient(ellipse at 50% 80%, rgba(168, 85, 247, 0.04) 0%, transparent 50%);
+            z-index: 0;
+            animation: bgShift 20s ease-in-out infinite alternate;
+        }
+
+        @keyframes bgShift {
+            0% {
+                transform: translate(0, 0) rotate(0deg);
+            }
+
+            100% {
+                transform: translate(-2%, -2%) rotate(2deg);
+            }
+        }
+
+        /* Header */
+        .header {
+            position: relative;
+            z-index: 10;
+            padding: 24px 32px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--border-glass);
+            backdrop-filter: blur(20px);
+            background: rgba(10, 14, 23, 0.8);
+        }
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .logo {
+            font-size: 32px;
+            line-height: 1;
+        }
+
+        .header-title h1 {
+            font-size: 22px;
+            font-weight: 700;
+            background: linear-gradient(135deg, #22c55e, #06b6d4);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            letter-spacing: -0.5px;
+        }
+
+        .header-title p {
+            font-size: 12px;
+            color: var(--text-muted);
+            margin-top: 2px;
+        }
+
+        .header-right {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .sim-badge {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 16px;
+            border-radius: 999px;
+            font-size: 13px;
+            font-weight: 600;
+            border: 1px solid var(--border-glass);
+            background: var(--bg-glass);
+        }
+
+        .sim-badge .dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--text-muted);
+        }
+
+        .sim-badge.running .dot {
+            background: var(--accent-green);
+            box-shadow: 0 0 8px var(--accent-green-glow);
+            animation: pulse 1.5s ease-in-out infinite;
+        }
+
+        .sim-badge.paused .dot {
+            background: var(--accent-yellow);
+        }
+
+        @keyframes pulse {
+
+            0%,
+            100% {
+                opacity: 1;
+                transform: scale(1);
+            }
+
+            50% {
+                opacity: 0.6;
+                transform: scale(1.3);
+            }
+        }
+
+        /* Main Layout */
+        .main {
+            position: relative;
+            z-index: 1;
+            max-width: 1440px;
+            margin: 0 auto;
+            padding: 24px 32px;
+            display: grid;
+            gap: 20px;
+        }
+
+        /* Top Row: Weather + Controls + Stats */
+        .top-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 20px;
+        }
+
+        /* Cards */
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-glass);
+            border-radius: var(--radius);
+            padding: 24px;
+            backdrop-filter: blur(10px);
+            transition: border-color 0.3s, box-shadow 0.3s;
+        }
+
+        .card:hover {
+            border-color: rgba(255, 255, 255, 0.12);
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .card-title {
+            font-size: 13px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: var(--text-secondary);
+        }
+
+        .card-icon {
+            font-size: 20px;
+        }
+
+        /* Weather Card */
+        .weather-main {
+            display: flex;
+            align-items: baseline;
+            gap: 8px;
+            margin-bottom: 16px;
+        }
+
+        .weather-temp {
+            font-size: 48px;
+            font-weight: 800;
+            letter-spacing: -2px;
+            line-height: 1;
+        }
+
+        .weather-unit {
+            font-size: 20px;
+            color: var(--text-secondary);
+        }
+
+        .weather-desc {
+            font-size: 14px;
+            color: var(--text-secondary);
+            margin-bottom: 16px;
+        }
+
+        .weather-stats {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+
+        .weather-stat {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .weather-stat-icon {
+            width: 32px;
+            height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: var(--radius-sm);
+            font-size: 14px;
+        }
+
+        .weather-stat-icon.humid {
+            background: rgba(59, 130, 246, 0.15);
+        }
+
+        .weather-stat-icon.rain {
+            background: rgba(6, 182, 212, 0.15);
+        }
+
+        .weather-stat-label {
+            font-size: 11px;
+            color: var(--text-muted);
+        }
+
+        .weather-stat-value {
+            font-size: 14px;
+            font-weight: 600;
+        }
+
+        /* Controls Card */
+        .controls-grid {
+            display: grid;
+            gap: 12px;
+        }
+
+        .btn-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr 1fr;
+            gap: 8px;
+        }
+
+        .btn {
+            padding: 10px 16px;
+            border: 1px solid var(--border-glass);
+            border-radius: var(--radius-sm);
+            background: var(--bg-glass);
+            color: var(--text-primary);
+            font-family: 'Inter', sans-serif;
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+        }
+
+        .btn:hover {
+            background: rgba(255, 255, 255, 0.08);
+            border-color: rgba(255, 255, 255, 0.15);
+            transform: translateY(-1px);
+        }
+
+        .btn:active {
+            transform: translateY(0);
+        }
+
+        .btn.primary {
+            background: var(--gradient-green);
+            border-color: transparent;
+            color: #fff;
+        }
+
+        .btn.primary:hover {
+            box-shadow: 0 4px 20px var(--accent-green-glow);
+        }
+
+        .btn.danger {
+            border-color: rgba(239, 68, 68, 0.3);
+            color: var(--accent-red);
+        }
+
+        .btn.danger:hover {
+            background: rgba(239, 68, 68, 0.1);
+        }
+
+        .speed-control {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .speed-label {
+            font-size: 12px;
+            color: var(--text-muted);
+            min-width: 50px;
+        }
+
+        .speed-slider {
+            flex: 1;
+            -webkit-appearance: none;
+            appearance: none;
+            height: 4px;
+            border-radius: 2px;
+            background: rgba(255, 255, 255, 0.1);
+            outline: none;
+        }
+
+        .speed-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: var(--accent-green);
+            cursor: pointer;
+            box-shadow: 0 0 8px var(--accent-green-glow);
+        }
+
+        .speed-value {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--accent-green);
+            min-width: 60px;
+            text-align: right;
+        }
+
+        .sim-time-display {
+            text-align: center;
+            padding: 12px;
+            border-radius: var(--radius-sm);
+            background: var(--bg-glass);
+            border: 1px solid var(--border-glass);
+        }
+
+        .sim-time-big {
+            font-size: 16px;
+            font-weight: 700;
+            letter-spacing: -0.3px;
+        }
+
+        .sim-time-sub {
+            font-size: 11px;
+            color: var(--text-muted);
+            margin-top: 4px;
+        }
+
+        /* Stats Card */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+        }
+
+        .stat-item {
+            padding: 16px;
+            border-radius: var(--radius-sm);
+            background: var(--bg-glass);
+            border: 1px solid var(--border-glass);
+        }
+
+        .stat-value {
+            font-size: 28px;
+            font-weight: 800;
+            letter-spacing: -1px;
+            line-height: 1;
+        }
+
+        .stat-value.green {
+            color: var(--accent-green);
+        }
+
+        .stat-value.blue {
+            color: var(--accent-blue);
+        }
+
+        .stat-value.purple {
+            color: var(--accent-purple);
+        }
+
+        .stat-value.cyan {
+            color: var(--accent-cyan);
+        }
+
+        .stat-label {
+            font-size: 11px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-top: 6px;
+        }
+
+        /* Plants Row */
+        .plants-row {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 20px;
+        }
+
+        .plant-card {
+            position: relative;
+            overflow: hidden;
+        }
+
+        .plant-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 16px;
+        }
+
+        .plant-name-section {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .plant-emoji {
+            font-size: 36px;
+            filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.3));
+        }
+
+        .plant-name {
+            font-size: 18px;
+            font-weight: 700;
+        }
+
+        .plant-status {
+            font-size: 11px;
+            padding: 4px 10px;
+            border-radius: 999px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .plant-status.healthy {
+            background: rgba(34, 197, 94, 0.15);
+            color: var(--accent-green);
+        }
+
+        .plant-status.wilting {
+            background: rgba(239, 68, 68, 0.15);
+            color: var(--accent-red);
+            animation: flashRed 1s ease-in-out infinite;
+        }
+
+        .plant-status.underwatered {
+            background: rgba(234, 179, 8, 0.15);
+            color: var(--accent-yellow);
+        }
+
+        .plant-status.overwatered {
+            background: rgba(59, 130, 246, 0.15);
+            color: var(--accent-blue);
+        }
+
+        @keyframes flashRed {
+
+            0%,
+            100% {
+                opacity: 1;
+            }
+
+            50% {
+                opacity: 0.5;
+            }
+        }
+
+        /* Moisture Bar */
+        .moisture-section {
+            margin-bottom: 16px;
+        }
+
+        .moisture-label-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            margin-bottom: 8px;
+        }
+
+        .moisture-label {
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+
+        .moisture-value {
+            font-size: 24px;
+            font-weight: 800;
+            letter-spacing: -1px;
+        }
+
+        .moisture-bar-bg {
+            width: 100%;
+            height: 8px;
+            border-radius: 4px;
+            background: rgba(255, 255, 255, 0.06);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .moisture-bar-fill {
+            height: 100%;
+            border-radius: 4px;
+            transition: width 0.5s ease, background 0.5s ease;
+        }
+
+        .moisture-range-markers {
+            position: relative;
+            height: 12px;
+            margin-top: 4px;
+        }
+
+        .range-marker {
+            position: absolute;
+            top: 0;
+            width: 1px;
+            height: 8px;
+            background: var(--text-muted);
+            opacity: 0.4;
+        }
+
+        .range-marker-label {
+            position: absolute;
+            top: 10px;
+            font-size: 9px;
+            color: var(--text-muted);
+            transform: translateX(-50%);
+        }
+
+        /* Health Bar */
+        .health-section {
+            margin-bottom: 16px;
+        }
+
+        .health-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 6px;
+        }
+
+        .health-label {
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+
+        .health-value {
+            font-size: 14px;
+            font-weight: 700;
+        }
+
+        .health-bar-bg {
+            width: 100%;
+            height: 4px;
+            border-radius: 2px;
+            background: rgba(255, 255, 255, 0.06);
+        }
+
+        .health-bar-fill {
+            height: 100%;
+            border-radius: 2px;
+            transition: width 0.5s ease, background 0.5s ease;
+        }
+
+        .plant-stats {
+            display: flex;
+            gap: 16px;
+            padding-top: 12px;
+            border-top: 1px solid var(--border-glass);
+        }
+
+        .plant-stat {
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+
+        .plant-stat span {
+            color: var(--text-primary);
+            font-weight: 600;
+        }
+
+        .water-btn {
+            margin-top: 12px;
+            width: 100%;
+            padding: 8px;
+            border: 1px solid rgba(59, 130, 246, 0.3);
+            border-radius: var(--radius-sm);
+            background: rgba(59, 130, 246, 0.08);
+            color: var(--accent-blue);
+            font-family: 'Inter', sans-serif;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .water-btn:hover {
+            background: rgba(59, 130, 246, 0.15);
+            box-shadow: 0 0 20px var(--accent-blue-glow);
+        }
+
+        /* Charts Row */
+        .charts-row {
+            display: grid;
+            grid-template-columns: 2fr 1fr;
+            gap: 20px;
+        }
+
+        .chart-container {
+            position: relative;
+            height: 280px;
+        }
+
+        /* Camera Card */
+        .camera-container {
+            position: relative;
+            width: 100%;
+            height: 280px;
+            background: #000;
+            border-radius: var(--radius-sm);
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .camera-feed {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            opacity: 0.9;
+        }
+
+        .camera-overlay {
+            position: absolute;
+            bottom: 12px;
+            right: 12px;
+            background: rgba(0, 0, 0, 0.6);
+            color: #fff;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 10px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .rec-dot {
+            width: 8px;
+            height: 8px;
+            background: red;
+            border-radius: 50%;
+            animation: blink 1s infinite;
+        }
+
+        @keyframes blink {
+            50% {
+                opacity: 0.5;
+            }
+        }
+
+        /* Camera Card */
+        .camera-container {
+            position: relative;
+            width: 100%;
+            height: 280px;
+            background: #000;
+            border-radius: var(--radius-sm);
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .camera-feed {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            opacity: 0.9;
+        }
+
+        .camera-overlay {
+            position: absolute;
+            bottom: 12px;
+            right: 12px;
+            background: rgba(0, 0, 0, 0.6);
+            color: #fff;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 10px;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .rec-dot {
+            width: 8px;
+            height: 8px;
+            background: red;
+            border-radius: 50%;
+            animation: blink 1s infinite;
+        }
+
+        @keyframes blink {
+            50% {
+                opacity: 0.5;
+            }
+        }
+
+        /* Events Log */
+        .events-list {
+            max-height: 280px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .events-list::-webkit-scrollbar {
+            width: 4px;
+        }
+
+        .events-list::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 2px;
+        }
+
+        .event-item {
+            padding: 8px 12px;
+            border-radius: var(--radius-sm);
+            background: var(--bg-glass);
+            border: 1px solid var(--border-glass);
+            font-size: 12px;
+            display: flex;
+            gap: 8px;
+            align-items: flex-start;
+            animation: slideIn 0.3s ease-out;
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateX(-10px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateX(0);
+            }
+        }
+
+        .event-icon {
+            font-size: 14px;
+            flex-shrink: 0;
+            margin-top: 1px;
+        }
+
+        .event-content {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .event-message {
+            color: var(--text-secondary);
+            line-height: 1.4;
+            word-break: break-word;
+        }
+
+        .event-time {
+            font-size: 10px;
+            color: var(--text-muted);
+            margin-top: 2px;
+        }
+
+        .event-item.decision {
+            border-left: 2px solid var(--accent-green);
+        }
+
+        .event-item.watering {
+            border-left: 2px solid var(--accent-blue);
+        }
+
+        .event-item.rain {
+            border-left: 2px solid var(--accent-cyan);
+        }
+
+        .event-item.alert {
+            border-left: 2px solid var(--accent-red);
+        }
+
+        .event-item.weather {
+            border-left: 2px solid var(--accent-yellow);
+        }
+
+        /* Welcome Overlay */
+        .welcome-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(10px);
+            z-index: 100;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            animation: fadeIn 0.4s ease;
+        }
+
+        .welcome-overlay.hidden {
+            display: none;
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+            }
+
+            to {
+                opacity: 1;
+            }
+        }
+
+        .welcome-card {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-glass);
+            border-radius: 24px;
+            padding: 48px;
+            max-width: 500px;
+            text-align: center;
+            box-shadow: var(--shadow-lg);
+        }
+
+        .welcome-emoji {
+            font-size: 64px;
+            margin-bottom: 20px;
+        }
+
+        .welcome-title {
+            font-size: 28px;
+            font-weight: 800;
+            background: linear-gradient(135deg, #22c55e, #06b6d4);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            margin-bottom: 8px;
+        }
+
+        .welcome-subtitle {
+            font-size: 14px;
+            color: var(--text-muted);
+            margin-bottom: 24px;
+            font-style: italic;
+        }
+
+        .welcome-desc {
+            font-size: 14px;
+            color: var(--text-secondary);
+            line-height: 1.7;
+            margin-bottom: 32px;
+        }
+
+        .welcome-btn {
+            padding: 14px 40px;
+            border: none;
+            border-radius: 12px;
+            background: var(--gradient-green);
+            color: #fff;
+            font-family: 'Inter', sans-serif;
+            font-size: 16px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: all 0.3s;
+            box-shadow: 0 4px 20px var(--accent-green-glow);
+        }
+
+        .welcome-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 30px var(--accent-green-glow);
+        }
+
+        /* Rain Overlay */
+        .rain-indicator {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, var(--accent-cyan), var(--accent-blue), var(--accent-cyan));
+            background-size: 200% 100%;
+            animation: rainShimmer 2s linear infinite;
+            z-index: 50;
+        }
+
+        .rain-indicator.active {
+            display: block;
+        }
+
+        @keyframes rainShimmer {
+            0% {
+                background-position: 200% 0;
+            }
+
+            100% {
+                background-position: -200% 0;
+            }
+        }
+
+        /* Responsive */
+        @media (max-width: 1200px) {
+            .top-row {
+                grid-template-columns: 1fr 1fr;
+            }
+
+            .plants-row {
+                grid-template-columns: 1fr 1fr;
+            }
+
+            .charts-row {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        @media (max-width: 768px) {
+            .main {
+                padding: 16px;
+            }
+
+            .top-row {
+                grid-template-columns: 1fr;
+            }
+
+            .plants-row {
+                grid-template-columns: 1fr;
+            }
+
+            .header {
+                padding: 16px;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div id="rainIndicator" class="rain-indicator"></div>
+    <header class="header">
+        <div class="header-left">
+            <div class="logo">🌱</div>
+            <div class="header-title">
+                <h1>JULIA — Simulator</h1>
+                <p>AI Crop Caretaker • Virtual Garden</p>
+            </div>
+        </div>
+        <div class="header-right">
+            <div id="simBadge" class="sim-badge">
+                <span class="dot"></span>
+                <span id="simStatusText">Stopped</span>
+            </div>
+        </div>
+    </header>
+
+    <main class="main">
+        <div class="top-row">
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Weather</span>
+                    <span class="card-icon" id="weatherIcon">⛅</span>
+                </div>
+                <div class="weather-main">
+                    <span id="weatherTemp" class="weather-temp">28</span>
+                    <span class="weather-unit">°C</span>
+                </div>
+                <div id="weatherDesc" class="weather-desc">Partly Cloudy</div>
+                <div class="weather-stats">
+                    <div class="weather-stat">
+                        <div class="weather-stat-icon humid">💧</div>
+                        <div>
+                            <div class="weather-stat-label">Humidity</div>
+                            <div id="weatherHumidity" class="weather-stat-value">72%</div>
+                        </div>
+                    </div>
+                    <div class="weather-stat">
+                        <div class="weather-stat-icon rain">🌧️</div>
+                        <div>
+                            <div class="weather-stat-label">Rain Chance</div>
+                            <div id="weatherRain" class="weather-stat-value">30%</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Controls</span>
+                    <span class="card-icon">🎮</span>
+                </div>
+                <div class="controls-grid">
+                    <div class="sim-time-display">
+                        <div id="simTime" class="sim-time-big">Monday, Feb 18 2026 — 06:00 AM</div>
+                        <div id="simDay" class="sim-time-sub">Day 0 • 0h elapsed</div>
+                    </div>
+                    <div class="btn-row">
+                        <button id="btnStart" class="btn primary" onclick="startSim()">▶ Start</button>
+                        <button id="btnPause" class="btn" onclick="pauseSim()">⏸ Pause</button>
+                        <button id="btnStop" class="btn danger" onclick="stopSim()">⏹ Reset</button>
+                    </div>
+                    <div class="speed-control">
+                        <span class="speed-label">Speed</span>
+                        <input type="range" id="speedSlider" class="speed-slider" min="0.5" max="12" step="0.5"
+                            value="2" oninput="setSpeed(this.value)">
+                        <span id="speedValue" class="speed-value">2.0x</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Statistics</span>
+                    <span class="card-icon">📊</span>
+                </div>
+                <div class="stats-grid">
+                    <div class="stat-item">
+                        <div id="statDecisions" class="stat-value green">0</div>
+                        <div class="stat-label">Decisions</div>
+                    </div>
+                    <div class="stat-item">
+                        <div id="statWaterings" class="stat-value blue">0</div>
+                        <div class="stat-label">Waterings</div>
+                    </div>
+                    <div class="stat-item">
+                        <div id="statWater" class="stat-value cyan">0</div>
+                        <div class="stat-label">Total mL</div>
+                    </div>
+                    <div class="stat-item">
+                        <div id="statHealth" class="stat-value purple">100</div>
+                        <div class="stat-label">Avg Health</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Camera Row -->
+        <div class="card" style="margin-bottom: 20px;">
+            <div class="card-header">
+                <span class="card-title">Live Vision</span>
+                <span class="card-icon">👁️</span>
+            </div>
+            <div class="camera-container">
+                <img id="cameraFeed" class="camera-feed" src="/api/camera/latest" alt="Live Feed">
+                <div class="camera-overlay">
+                    <div class="rec-dot"></div>
+                    <span>LIVE</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="plants-row" id="plantsRow"></div>
+
+        <div class="charts-row">
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Soil Moisture Over Time</span>
+                    <span class="card-icon">📈</span>
+                </div>
+                <div class="chart-container">
+                    <canvas id="moistureChart"></canvas>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-header">
+                    <span class="card-title">Event Log</span>
+                    <span class="card-icon">📋</span>
+                </div>
+                <div id="eventsList" class="events-list">
+                    <div class="event-item">
+                        <span class="event-icon">🌱</span>
+                        <div class="event-content">
+                            <div class="event-message">Press Start to begin the simulation...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <div id="welcomeOverlay" class="welcome-overlay">
+        <div class="welcome-card">
+            <div class="welcome-emoji">🌱</div>
+            <div class="welcome-title">Julia Simulator</div>
+            <div class="welcome-subtitle">En honor a Abuela Julia 🌺</div>
+            <div class="welcome-desc">Watch Julia's AI brain make watering decisions in a virtual Puerto Rico garden.
+            </div>
+            <button class="welcome-btn" onclick="dismissWelcome()">🌿 Start Growing</button>
+        </div>
+    </div>
+
+    <script>
+        let pollingInterval = null;
+        let moistureChart = null;
+        let currentState = null;
+        const PLANT_COLORS = {
+            basil: { main: '#22c55e', bg: 'rgba(34,197,94,0.2)' },
+            pepper: { main: '#ef4444', bg: 'rgba(239,68,68,0.2)' },
+            tomato: { main: '#f97316', bg: 'rgba(249,115,22,0.2)' },
+        };
+
+        async function api(path, method = 'GET', body = null) {
+            const opts = { method, headers: { 'Content-Type': 'application/json' } };
+            if (body) opts.body = JSON.stringify(body);
+            try {
+                const resp = await fetch(path, opts);
+                return await resp.json();
+            } catch (e) {
+                console.error('API error:', e);
+                return null;
+            }
+        }
+
+        async function startSim() { await api('/api/start', 'POST'); startPolling(); }
+        async function pauseSim() { await api('/api/pause', 'POST'); stopPolling(); }
+        async function stopSim() { await api('/api/stop', 'POST'); stopPolling(); location.reload(); }
+        async function setSpeed(val) {
+            document.getElementById('speedValue').textContent = parseFloat(val).toFixed(1) + 'x';
+            await api('/api/speed', 'POST', { speed: parseFloat(val) });
+        }
+        async function manualWater(plantId) { await api('/api/water', 'POST', { plant_id: plantId, amount_ml: 200 }); }
+
+        function startPolling() { if (pollingInterval) return; pollingInterval = setInterval(pollState, 300); }
+        function stopPolling() { if (pollingInterval) { clearInterval(pollingInterval); pollingInterval = null; } }
+
+        async function pollState() {
+            const state = await api('/api/tick', 'POST');
+            if (state) { currentState = state; updateUI(state); }
+        }
+
+        function updateUI(s) {
+            const badge = document.getElementById('simBadge');
+            const statusText = document.getElementById('simStatusText');
+            badge.className = 'sim-badge ' + s.status;
+            statusText.textContent = s.status.charAt(0).toUpperCase() + s.status.slice(1);
+
+            document.getElementById('weatherTemp').textContent = Math.round(s.weather.temperature);
+            document.getElementById('weatherDesc').textContent = s.weather.description;
+            document.getElementById('weatherHumidity').textContent = Math.round(s.weather.humidity) + '%';
+            document.getElementById('weatherRain').textContent = Math.round(s.weather.rain_probability) + '%';
+
+            const rainBar = document.getElementById('rainIndicator');
+            rainBar.className = 'rain-indicator' + (s.weather.is_raining ? ' active' : '');
+
+            document.getElementById('simTime').textContent = s.sim_time;
+            document.getElementById('simDay').textContent = `Day ${s.sim_day} • ${s.elapsed_hours}h elapsed`;
+
+            document.getElementById('statDecisions').textContent = s.stats.total_decisions;
+            document.getElementById('statWaterings').textContent = s.stats.total_waterings;
+            document.getElementById('statWater').textContent = s.stats.total_water_ml.toLocaleString();
+            document.getElementById('statHealth').textContent = s.stats.avg_health;
+
+            updatePlants(s.plants);
+            updateChart(s.chart_data);
+            updateEvents(s.events);
+        }
+
+        function updatePlants(plants) {
+            const container = document.getElementById('plantsRow');
+            let html = '';
+            for (const [pid, p] of Object.entries(plants)) {
+                const moistureColor = p.soil_moisture < p.min_moisture ? 'var(--accent-red)' : p.soil_moisture > p.max_moisture ? 'var(--accent-blue)' : 'var(--accent-green)';
+                const healthColor = p.health > 70 ? 'var(--accent-green)' : p.health > 40 ? 'var(--accent-yellow)' : 'var(--accent-red)';
+                html += `
+                <div class="card plant-card">
+                    <div class="plant-header">
+                        <div class="plant-name-section">
+                            <span class="plant-emoji">${p.emoji}</span>
+                            <span class="plant-name">${p.name}</span>
+                        </div>
+                        <span class="plant-status ${p.health_status}">${p.health_status}</span>
+                    </div>
+                    <div class="moisture-section">
+                        <div class="moisture-label-row">
+                            <span class="moisture-label">Soil Moisture</span>
+                            <span class="moisture-value" style="color:${moistureColor}">${p.soil_moisture}%</span>
+                        </div>
+                        <div class="moisture-bar-bg"><div class="moisture-bar-fill" style="width:${p.soil_moisture}%;background:${moistureColor}"></div></div>
+                    </div>
+                    <div class="health-section">
+                        <div class="health-row"><span class="health-label">Plant Health</span><span class="health-value" style="color:${healthColor}">${p.health}%</span></div>
+                        <div class="health-bar-bg"><div class="health-bar-fill" style="width:${p.health}%;background:${healthColor}"></div></div>
+                    </div>
+                    <div class="plant-stats">
+                        <div class="plant-stat">Watered: <span>${p.times_watered}x</span></div>
+                        <div class="plant-stat">Total: <span>${p.total_water_ml}ml</span></div>
+                    </div>
+                    <button class="water-btn" onclick="manualWater('${pid}')">💧 Manual Water</button>
+                </div>`;
+            }
+            container.innerHTML = html;
+        }
+
+        function initChart() {
+            const ctx = document.getElementById('moistureChart').getContext('2d');
+            moistureChart = new Chart(ctx, {
+                type: 'line',
+                data: { labels: [], datasets: [] },
+                options: {
+                    responsive: true, maintainAspectRatio: false, animation: { duration: 0 },
+                    interaction: { mode: 'index', intersect: false },
+                    plugins: { legend: { labels: { color: '#94a3b8' } } },
+                    scales: {
+                        x: { ticks: { color: '#64748b' }, grid: { color: 'rgba(255,255,255,0.03)' } },
+                        y: {
+                            min: 0, max: 100,
+                            title: { display: true, text: 'Moisture / Humidity (%)', color: '#94a3b8' },
+                            ticks: { color: '#64748b' }, grid: { color: 'rgba(255,255,255,0.05)' }
+                        },
+                        y1: {
+                            min: 15, max: 40,
+                            position: 'right',
+                            title: { display: true, text: 'Temp (°C)', color: '#ef4444' },
+                            ticks: { color: '#ef4444' },
+                            grid: { drawOnChartArea: false }
+                        }
+                    }
+                }
+            });
+        }
+
+        function updateChart(chartData) {
+            if (!moistureChart || !chartData) return;
+            const pids = Object.keys(chartData);
+            if (pids.length === 0) return;
+
+            const labels = chartData[pids[0]].map(d => d.time);
+            moistureChart.data.labels = labels;
+
+            // 1. Plant Moisture Datasets
+            const datasets = pids.map(pid => ({
+                label: pid,
+                data: chartData[pid].map(d => d.moisture),
+                borderColor: (PLANT_COLORS[pid] || {}).main,
+                backgroundColor: (PLANT_COLORS[pid] || {}).bg,
+                fill: true, tension: 0.3, pointRadius: 0,
+                yAxisID: 'y',
+                order: 2
+            }));
+
+            // 2. Weather Datasets (Global)
+            // Use first plant's weather data as proxy
+            const globalData = chartData[pids[0]];
+
+            datasets.push({
+                label: 'Temp (°C)',
+                data: globalData.map(d => d.temperature),
+                borderColor: '#ef4444',
+                borderDash: [5, 5],
+                tension: 0.3, pointRadius: 0,
+                yAxisID: 'y1',
+                fill: false,
+                order: 1
+            });
+
+            datasets.push({
+                label: 'Humidity (%)',
+                data: globalData.map(d => d.humidity),
+                borderColor: '#06b6d4',
+                borderDash: [2, 2],
+                tension: 0.3, pointRadius: 0,
+                yAxisID: 'y',
+                fill: false,
+                order: 1
+            });
+
+            moistureChart.data.datasets = datasets;
+            moistureChart.update('none');
+        }
+
+        function updateEvents(events) {
+            const container = document.getElementById('eventsList');
+            let html = '';
+            for (const e of (events || [])) {
+                html += `<div class="event-item ${e.type}"><span class="event-icon">${e.icon}</span><div class="event-content"><div class="event-message">${e.message}</div><div class="event-time">${e.sim_time}</div></div></div>`;
+            }
+            container.innerHTML = html;
+        }
+
+        // Refresh camera every 5 seconds
+        setInterval(() => {
+            const img = document.getElementById('cameraFeed');
+            if (img) img.src = '/api/camera/latest?t=' + new Date().getTime();
+        }, 5000);
+
+        function dismissWelcome() { document.getElementById('welcomeOverlay').classList.add('hidden'); startSim(); }
+
+        initChart();
+        api('/api/state').then(state => { if (state) updateUI(state); });
+    </script>
+
+    <!-- Chat Toggle Button -->
+    <button id="chatToggle" onclick="toggleChat()" style="
+        position: fixed;
+        bottom: 20px;
+        right: 20px;
+        width: 60px;
+        height: 60px;
+        border-radius: 50%;
+        background: linear-gradient(135deg, #22c55e, #16a34a);
+        border: none;
+        color: white;
+        font-size: 24px;
+        cursor: pointer;
+        box-shadow: 0 4px 20px rgba(34, 197, 94, 0.4);
+        z-index: 1000;
+        transition: transform 0.2s;
+    ">🌱</button>
+
+    <!-- Chat Panel -->
+    <div id="chatPanel" style="
+        display: none;
+        position: fixed;
+        bottom: 90px;
+        right: 20px;
+        width: 380px;
+        max-height: 500px;
+        background: rgba(15, 23, 42, 0.95);
+        border: 1px solid rgba(255,255,255,0.1);
+        border-radius: 16px;
+        backdrop-filter: blur(20px);
+        z-index: 1000;
+        overflow: hidden;
+        box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+        flex-direction: column;
+    ">
+        <!-- Header -->
+        <div style="
+            padding: 16px;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        ">
+            <span style="font-weight: bold; color: #22c55e;">🌱 Chat with Julia</span>
+            <button onclick="clearChat()" style="
+                background: none;
+                border: 1px solid rgba(255,255,255,0.2);
+                color: #94a3b8;
+                border-radius: 8px;
+                padding: 4px 8px;
+                cursor: pointer;
+                font-size: 12px;
+            ">Clear</button>
+        </div>
+
+        <!-- Messages -->
+        <div id="chatMessages" style="
+            flex: 1;
+            overflow-y: auto;
+            padding: 16px;
+            max-height: 350px;
+            min-height: 200px;
+        ">
+            <div style="color: #22c55e; margin-bottom: 12px;">
+                🌱 Hi! I'm Julia. Ask me anything about your garden!
+            </div>
+        </div>
+
+        <!-- Input -->
+        <div style="
+            padding: 12px;
+            border-top: 1px solid rgba(255,255,255,0.1);
+            display: flex;
+            gap: 8px;
+        ">
+            <input id="chatInput" type="text" placeholder="Ask Julia..." onkeypress="if(event.key==='Enter') sendChat()"
+                style="
+                    flex: 1;
+                    background: rgba(255,255,255,0.05);
+                    border: 1px solid rgba(255,255,255,0.15);
+                    border-radius: 8px;
+                    padding: 10px;
+                    color: white;
+                    outline: none;
+                " />
+            <button onclick="sendChat()" style="
+                background: #22c55e;
+                border: none;
+                border-radius: 8px;
+                padding: 10px 16px;
+                color: white;
+                cursor: pointer;
+                font-weight: bold;
+            ">Send</button>
+        </div>
+    </div>
+
+    <script>
+        let chatOpen = false;
+
+        function toggleChat() {
+            chatOpen = !chatOpen;
+            const panel = document.getElementById('chatPanel');
+            panel.style.display = chatOpen ? 'flex' : 'none';
+            if (chatOpen) {
+                document.getElementById('chatInput').focus();
+            }
+        }
+
+        function addMessage(text, isUser) {
+            const container = document.getElementById('chatMessages');
+            const msg = document.createElement('div');
+            msg.style.cssText = `
+            margin-bottom: 12px;
+            padding: 10px 14px;
+            border-radius: 12px;
+            max-width: 90%;
+            word-wrap: break-word;
+            ${isUser
+                    ? 'background: #22c55e; color: white; margin-left: auto; text-align: right;'
+                    : 'background: rgba(255,255,255,0.08); color: #e2e8f0;'
+                }
+        `;
+            msg.textContent = text;
+            container.appendChild(msg);
+            container.scrollTop = container.scrollHeight;
+        }
+
+        async function sendChat() {
+            const input = document.getElementById('chatInput');
+            const message = input.value.trim();
+            if (!message) return;
+
+            addMessage(message, true);
+            input.value = '';
+
+            // Show thinking indicator
+            addMessage('🌱 Thinking...', false);
+
+            try {
+                const response = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: message })
+                });
+                const data = await response.json();
+
+                // Remove thinking indicator
+                const msgs = document.getElementById('chatMessages');
+                msgs.removeChild(msgs.lastChild);
+
+                addMessage(data.response, false);
+            } catch (err) {
+                const msgs = document.getElementById('chatMessages');
+                msgs.removeChild(msgs.lastChild);
+                addMessage('❌ Could not reach Julia. Is LM Studio running?', false);
+            }
+        }
+
+        async function clearChat() {
+            try {
+                await fetch('/api/chat/clear', { method: 'POST' });
+            } catch (e) { }
+
+            const container = document.getElementById('chatMessages');
+            container.innerHTML = '<div style="color: #22c55e; margin-bottom: 12px;">🌱 Hi! I\'m Julia. Ask me anything about your garden!</div>';
+        }
+    </script>
+</body>
+
+</html>
