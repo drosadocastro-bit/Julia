@@ -1,5 +1,0 @@
-scenario,max_score,mean_score,overrides
-Scenario 1: Extreme Storm Season,0.376,0.23506666666666665,0
-Scenario 2: Flash Drought,0.468,0.4212444444444444,0
-Scenario 3: La Niña Wet Year,0.242,0.22064444444444445,0
-Scenario 4: False Positive Glitches,0.376,0.22268888888888888,0

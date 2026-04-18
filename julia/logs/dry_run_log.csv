@@ -1,2 +1,0 @@
-date,time_utc,temp_c,humidity,precip_mm,description,rain_anomaly_pct,drought_idx,v0_risk,v0_category,ml_weekly,ml_monthly,ml_composite,ml_category,ml_advisory,water_multiplier,calculated_ml,would_water,rain_7d,rain_30d,day_length_min
-2026-03-02,17:24,29.4,53.0,0.0,Mostly Clear and Windy,-100.0,-3.0,0.45,MODERATE,0.388,0.294,0.388,MODERATE,ELEVATED_WATCH,1.0,200,YES,0,0.0,707.0

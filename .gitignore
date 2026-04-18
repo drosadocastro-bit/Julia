@@ -47,6 +47,12 @@ history_output.txt
 debug_out.txt
 server_error_*.txt
 temp_out.log
+metrics_*.txt
+metrics_*.csv
+test_err.txt
+*.csv
+!requirements.txt
+!README.md
 
 # Large data folders (potential)
 Agriculture-Soil-QA-Pairs-Dataset/
