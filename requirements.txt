@@ -1,5 +1,5 @@
-# Cibuco_Boriken — BirdCLEF+ 2026 pinned requirements
-# Pinned from active training environment (Python 3.13)
+# Julia — AI Crop Caretaker
+# Pinned from active development environment (Python 3.13)
 
 torch==2.9.1
 torchaudio==2.9.1
