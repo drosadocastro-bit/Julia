@@ -241,7 +241,7 @@ Every decision passes through the **Caring Invariants Firewall** — 5 rules Jul
 
 ## 👨‍💻 Author
 
-**Danny** — FAA Air Traffic Systems Specialist, Bayamón, Puerto Rico. 20+ years of signal processing experience, building Julia to honor his grandmother's love of gardening.
+**Danny** — Bayamón, Puerto Rico. Building Julia to honor his grandmother's love of gardening.
 
 ## 📄 License
 
